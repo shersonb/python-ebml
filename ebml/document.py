@@ -1,0 +1,341 @@
+import ebml.base
+import ebml.head
+import ebml.util
+import io
+import threading
+
+from ebml.exceptions import ReadError, WriteError
+
+class EBMLBody(ebml.base.EBMLMasterElement):
+    """
+    In practice, EBMLBody is a Master Element, but its behavior is so vastly different, owing to the
+    potential for the large size, there is no point in subclassing it from EBMLMasterElement.
+
+    This element will only read/write child elements from/to a file rather than store them in memory.
+    Only addresses for elements in the file will be stored.
+    """
+
+    allowunknown = True
+
+    def __init__(self, file, ebmlID=None, parent=None):
+        self._file = file
+        self.lock = threading.RLock()
+
+        if ebmlID is not None:
+            self.ebmlID = ebmlID
+
+        self.parent = parent
+        self._knownChildren = {}
+
+        if "r" in file.mode:
+            try:
+                self._init_read()
+
+            except ebml.util.UnexpectedEndOfData:
+                if not self._file.writable():
+                    raise
+
+                self._init_write()
+
+        else:
+            self._init_write()
+
+    def _size(self):
+        return self._contentssize
+
+    def _toBytes(self):
+        raise NotImplementedError("Use self.writeChildElement(...) and self.removeChildElement(...) to modify file.")
+
+    def _init_write(self):
+        self._file.write(self.ebmlID)
+
+        self._sizeOffset = self._file.tell()
+        self._sizesize = 8
+        self._file.write(((1 << (7*self._sizesize + 1)) - 1).to_bytes(self._sizesize, byteorder="big"))
+
+        self._contentssize = 0
+        self._contentsOffset = self._file.tell()
+
+    def _init_read(self):
+        ebmlID = ebml.util.readVint(self._file)
+
+        if self.ebmlID is not None:
+            if self.ebmlID != ebmlID:
+                raise ReadError(f"Incorrect EBML ID found. Expected '{ebml.util.formatBytes(self.ebmlID)},' got '{ebml.util.formatBytes(ebmlID)}' instead.")
+        else:
+            self.ebmlID = ebmlID
+
+        self._sizeOffset = self._file.tell()
+        size = ebml.util.readVint(self._file)
+        self._sizesize = len(size)
+        self._contentssize = ebml.util.fromVint(size)
+        self._contentsOffset = self._file.tell()
+
+    def _writeVoid(self, size):
+        for k in range(1, 9):
+            if size - 1 - k < 128**k - 1:
+                break
+
+        self._file.write(b"\xec")
+        self._file.write(ebml.util.toVint(size - 1 - k, k))
+
+    @property
+    def body(self):
+        return self
+
+    def close(self):
+        if self._file.writable():
+            L = sorted(self._knownChildren.items())
+            for (s1, e1), (s2, e2) in zip([(0, 0)] + L[:-1], L):
+                if e1 < s2:
+                    self.seek(e1)
+                    self._writeVoid(s2 - e1)
+
+            if len(L):
+                (s, e) = max(L)
+
+            else:
+                e = 0
+
+            self.seek(e)
+            self._file.truncate()
+            self.seek(-self._sizesize)
+            self._file.write(ebml.util.toVint(e, self._sizesize))
+        self._file.close()
+
+    def __del__(self):
+        if not self._file.closed:
+            self.close()
+
+    def seek(self, offset, whence=0):
+        if whence == 1:
+            return self._file.seek(offset + self._contentsOffset, whence)
+        elif whence == 2:
+            return self._file.seek(offset + self._contentsOffset + self._contentssize)
+        return self._file.seek(offset + self._contentsOffset, whence)
+
+    def tell(self):
+        return self._file.tell() - self._contentsOffset
+
+    def writeChildElement(self, child):
+        offset = self.tell()
+        siblingsbefore = {(s, e) for (s, e) in self._knownChildren.items() if s <= offset}
+        siblingsafter = {(s, e) for (s, e) in self._knownChildren.items() if s > offset}
+
+        if len(siblingsbefore):
+            (s, e) = max(siblingsbefore)
+            if offset < e:
+                raise WriteError(f"Writing element at offset {offset} collides with sibling at offset {s} (end offset {e}).")
+            if e < offset < e + 2:
+                raise WriteError(f"Element needs to start immediately after, or at least two bytes past the end of sibling at offset {s}.")
+
+        childsize = child.size()
+
+        if len(siblingsafter):
+            (s, e) = min(siblingsafter)
+
+            if offset + childsize > s:
+                raise WriteError(f"Writing element at offset {offset} collides with sibling at offset {s} (end offset {e}).")
+            if s - 2 < offset + childsize < s:
+                raise WriteError(f"Element needs to end immediately before, or at least two bytes before the start of sibling at offset {s}.")
+
+        if offset + childsize > 2**(7*self._sizesize) - 2:
+            raise WriteError(f"Element extends past maximum possible element size.")
+
+        child.toFile(self._file)
+
+        if not child.readonly:
+            child.readonly = True
+
+        self._knownChildren[offset] = offset + childsize
+        self._contentssize = max(self._contentssize, offset + childsize)
+        return offset
+
+    def deleteChildElement(self, offset):
+        if not self._file.writable():
+            raise io.UnsupportedOperation("write")
+
+        del self._knownChildren[offset]
+
+        children = list(self._knownChildren.items())
+        if len(children):
+            (s, self._contentssize) = max(children)
+        else:
+            self._contentssize = 0
+
+    def readElement(self, withclass, parent=None):
+        offset = self.tell()
+
+        if offset >= self._contentssize or offset < 0:
+            return None
+
+        ebmlID = ebml.util.peekVint(self._file)
+        size = ebml.util.peekVint(self._file, len(ebmlID))
+
+        if ebmlID == ebml.base.Void.ebmlID:
+            child = ebml.base.Void.fromFile(self._file)
+            child.readonly = True
+            return
+
+        if isinstance(withclass, (list, tuple)):
+            for childcls in withclass:
+                if childcls.ebmlID == ebmlID:
+                    break
+            else:
+                self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
+                return
+        elif isinstance(withclass, dict):
+            try:
+                childcls = withclass[ebmlID]
+
+            except KeyError:
+                self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
+                return
+
+        else:
+            childcls = withclass
+
+            if childcls.ebmlID is not None and ebmlID != childcls.ebmlID:
+                self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
+                return
+
+        child = childcls.fromFile(self._file, parent=parent)
+        child.readonly = True
+
+        return child
+
+    def readChildElement(self):
+        offset = self.tell()
+
+        if offset >= self._contentssize or offset < 0:
+            return None
+
+        siblingsbefore = {(s, e) for (s, e) in self._knownChildren.items() if s <= offset}
+
+        if len(siblingsbefore):
+            (s, e) = max(siblingsbefore)
+            if s < offset < e:
+                raise ReadError(f"Offset {offset} is in the middle of a known child at offset {s}.")
+
+        if self.allowunknown:
+            types = tuple(self._childTypes.values()) + (ebml.base.Void, ebml.base.EBMLData)
+        else:
+            types = tuple(self._childTypes.values()) + (ebml.base.Void,)
+
+        with self.lock:
+            ebmlID = ebml.util.peekVint(self._file)
+            size = ebml.util.peekVint(self._file, len(ebmlID))
+            child = self.readElement(types, parent=self)
+
+        self._knownChildren[offset] = offset + len(ebmlID) + len(size) + ebml.util.fromVint(size)
+
+        return child
+
+    def flush(self):
+        self._file.flush()
+
+    def scan(self, until=None):
+        """
+        Scans body for child elements from the last known child before current offset until
+        the end of the body, or 'until.'
+        """
+        offset = self.tell()
+
+        childrenbefore = {(s, e) for (s, e) in self._knownChildren.items() if s <= offset}
+        if len(childrenbefore):
+            (s, e) = max(childrenbefore)
+            self.seek(e)
+        else:
+            self.seek(0)
+
+        if until is None:
+            until = self._contentssize
+
+        while offset < until:
+            with self.lock:
+                self.seek(offset)
+                ebmlID = ebml.util.peekVint(self._file)
+                size = ebml.util.peekVint(self._file, len(ebmlID))
+
+            if ebmlID != ebml.base.Void.ebmlID:
+                self._knownChildren[offset] = offset + len(ebmlID) + len(size) + ebml.util.fromVint(size)
+
+            offset += len(ebmlID) + len(size) + ebml.util.fromVint(size)
+
+    @classmethod
+    def _fromBytes(cls, data, ebmlID=None, parent=None):
+        raise NotImplementedError("Use self.readChildElement()) to readfile.")
+
+class EBMLDocument(object):
+    def __init__(self, file, mode="r", bodycls=EBMLBody):
+        if "b" not in mode:
+            mode += "b"
+
+        self._file = open(file, mode)
+        self._bodycls = bodycls
+
+        if "r" in mode:
+            self._init_read()
+
+        elif "w" in mode:
+            self._init_write()
+
+    def _init_read(self):
+        """
+        This should be overridden in subclasses if you are looking to handle specific document types.
+        """
+        self.head = ebml.head.EBMLHead.fromFile(self._file)
+        self.body = self._bodycls(self._file)
+
+    def _init_write(self):
+        """
+        This should be overridden in subclasses if you are looking to handle specific document types.
+        """
+        self.head = None
+        self.body = None
+        
+
+    def writeEBMLHead(self, ebmlHead):
+        if hasattr(self, "head") and self.head is not None:
+            raise WriteError("EBML Header already exists.")
+
+        ebmlHead.toFile(self._file)
+        self.head = ebmlHead
+        ebmlHead.readonly = True
+
+    def beginWriteEBMLBody(self, ebmlID=None):
+        if not hasattr(self, "head") or self.head is None:
+            raise WriteError("EBML Header does not exist.")
+
+        if hasattr(self, "body") and self.body is not None:
+            raise WriteError("EBML Body already exists.")
+
+        if ebmlID is not None:
+            self.body = self._bodycls(self._file, ebmlID=ebmlID)
+
+        else:
+            self.body = self._bodycls(self._file)
+
+    @property
+    def writeChildElement(self):
+        return self.body.writeChildElement
+
+    @property
+    def readChildElement(self):
+        return self.body.readChildElement
+
+    @property
+    def deleteChildElement(self):
+        return self.body.deleteChildElement
+
+    @property
+    def seek(self):
+        return self.body.seek
+
+    @property
+    def tell(self):
+        return self.body.tell
+
+    @property
+    def close(self):
+        return self.body.close
