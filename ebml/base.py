@@ -42,7 +42,6 @@ class EBMLProperty(object):
         self.default = default
         self._sethook = sethook
 
-        #if isinstance(cls, EBMLData):
         if hasattr(cls, "data") and isinstance(cls.data, EBMLProperty):
             self._get = self.getdata
             self._set = self.setdata
@@ -85,27 +84,37 @@ class EBMLProperty(object):
         if callable(self._sethook):
             value = self._sethook(inst, value)
 
-        if value is None:
-            return self.__delete__(inst)
-
         if hasattr(inst, "readonly") and inst.readonly:
             raise AttributeError("Cannot change attribute for read-only element.")
 
-        if isinstance(value, self.cls):
+        if value is None and self.optional:
+            setattr(inst, self._attrname, value)
+
+        elif isinstance(value, self.cls):
             if issubclass(self.cls, (EBMLElement, EBMLList)) and value.parent is not inst:
                 value.parent = inst
 
             setattr(inst, self._attrname, value)
 
         elif issubclass(self.cls, (EBMLElement, EBMLList)):
-            setattr(inst, self._attrname, self.cls(value, parent=inst))
+            try:
+                setattr(inst, self._attrname, self.cls(value, parent=inst))
+
+            except TypeError as exc:
+                exc.args = (f"Invalid type {type(value).__name__} for '{self.attrname}' attribute of {type(inst).__name__} object.",)
+                raise
 
         else:
-            setattr(inst, self._attrname, self.cls(value))
+            try:
+                setattr(inst, self._attrname, self.cls(value))
+
+            except TypeError as exc:
+                exc.args = (f"Invalid type {type(value).__name__} for '{self.attrname}' attribute of {type(inst).__name__} object.",)
+                raise
 
     def setdata(self, inst, value):
-        if value is None:
-            return self.__delete__(inst)
+        if value is None and self.optional:
+            return setattr(inst, self._attrname, value)
 
         if hasattr(inst, "readonly") and inst.readonly:
             raise AttributeError("Cannot change attribute for read-only element.")
@@ -118,6 +127,7 @@ class EBMLProperty(object):
 
         if isinstance(obj, self.cls):
             obj.data = value
+
 
         else:
             self.setobject(inst, value)
@@ -158,12 +168,9 @@ class EBMLList(list):
 
     def __init_data__(self, items=[], parent=None):
         self.parent = parent
-        list.__init__(self, [self.castdata(item) for item in items])
+        list.__init__(self, [self._castdata(item) for item in items])
 
     def __init_object__(self, items=[], parent=None):
-        #import matroska
-        #if self.itemclass is matroska.tracks.TrackEntries:
-            #print(self.itemclass, type(parent))
         self.parent = parent
 
         for item in items:
@@ -172,7 +179,7 @@ class EBMLList(list):
 
         list.__init__(self, items)
 
-    def castdata(self, data):
+    def _castdata(self, data):
         if isinstance(data, self.itemclass):
             data.parent = self.parent
             return data
@@ -189,9 +196,13 @@ class EBMLList(list):
         return cls(list.__iter__(self), parent=parent)
 
     def extenddata(self, items):
-        list.extend(self, [self.castdata(item) for item in items])
+        self._checkReadOnly()
+
+        list.extend(self, [self._castdata(item) for item in items])
 
     def extendobject(self, items):
+        self._checkReadOnly()
+
         for item in items:
             if not isinstance(item, self.itemclass):
                 raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
@@ -199,20 +210,27 @@ class EBMLList(list):
         list.extend(self, items)
 
     def appenddata(self, item):
-        item = self.castdata(item)
+        self._checkReadOnly()
+
+        item = self._castdata(item)
         list.append(self, item)
 
     def appendobject(self, item):
+        self._checkReadOnly()
+
         if not isinstance(item, self.itemclass):
             raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
 
         list.append(self, item)
 
     def insertdata(self, index, item):
-        item = self.castdata(item)
+        self._checkReadOnly()
+        item = self._castdata(item)
         list.insert(self, index, item)
 
     def insertobject(self, index, item):
+        self._checkReadOnly()
+
         if not isinstance(item, self.itemclass):
             raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
 
@@ -225,40 +243,35 @@ class EBMLList(list):
     getobject = list.__getitem__
 
     def popdata(self, index):
+        self._checkReadOnly()
         item = self.popobject(index)
         return item.data
 
     def popobject(self, index):
-        if self.readonly:
-            raise TypeError("List is read-only. Use .copy() method to create an editable copy.")
-
+        self._checkReadOnly()
         return list.pop(self, index)
 
     def setobject(self, index, item):
-        if self.readonly:
-            raise TypeError("List is read-only. Use .copy() method to create an editable copy.")
-
-        item = self.castdata(item)
+        self._checkReadOnly()
+        item = self._castdata(item)
         list.__setitem__(self, index, item)
 
     def setdata(self, index, item):
-        if self.readonly:
-            raise TypeError("List is read-only. Use .copy() method to create an editable copy.")
-
+        self._checkReadOnly()
         obj = self.getobject(index)
         obj.data = item
 
     def __delitem__(self, key):
-        if self.readonly:
-            raise TypeError("List is read-only. Use .copy() method to create an editable copy.")
-
+        self._checkReadOnly()
         list.__delitem__(self, key)
 
     def remove(self, item):
+        self._checkReadOnly()
+        list.remove(self, item)
+
+    def _checkReadOnly(self):
         if self.readonly:
             raise TypeError("List is read-only. Use .copy() method to create an editable copy.")
-
-        list.remove(self, item)
 
     @property
     def parent(self):
