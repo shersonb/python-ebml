@@ -4,6 +4,7 @@ import datetime
 import binascii
 import ebml.util
 import ast
+from itertools import count
 
 try:
     import astor
@@ -91,14 +92,14 @@ class EBMLProperty(object):
             setattr(inst, self._attrname, value)
 
         elif isinstance(value, self.cls):
-            if issubclass(self.cls, (EBMLElement, EBMLList)) and value.parent is not inst:
+            if isinstance(value, (EBMLElement, EBMLList)) and value.parent is not inst:
                 value.parent = inst
 
             setattr(inst, self._attrname, value)
 
         elif issubclass(self.cls, (EBMLElement, EBMLList)):
             try:
-                setattr(inst, self._attrname, self.cls(value, parent=inst))
+                value = self.cls(value, parent=inst)
 
             except TypeError as exc:
                 exc.args = (f"Invalid type {type(value).__name__} for '{self.attrname}' attribute of {type(inst).__name__} object.",)
@@ -106,11 +107,13 @@ class EBMLProperty(object):
 
         else:
             try:
-                setattr(inst, self._attrname, self.cls(value))
+                value = self.cls(value)
 
             except TypeError as exc:
                 exc.args = (f"Invalid type {type(value).__name__} for '{self.attrname}' attribute of {type(inst).__name__} object.",)
                 raise
+
+        setattr(inst, self._attrname, value)
 
     def setdata(self, inst, value):
         if value is None and self.optional:
@@ -852,11 +855,11 @@ class EBMLInteger(EBMLData):
 
     def _size(self):
         if self.signed:
-            for k in range(1, 9):
+            for k in count(1):
                 if -128*256**(k-1) <= self.data < 128*256**(k-1):
                     return k
         else:
-            for k in range(1, 9):
+            for k in count(1):
                 if self.data < 256**k:
                     return k
 
