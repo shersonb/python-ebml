@@ -8,9 +8,6 @@ from ebml.exceptions import ReadError, WriteError
 
 class EBMLBody(ebml.base.EBMLMasterElement):
     """
-    In practice, EBMLBody is a Master Element, but its behavior is so vastly different, owing to the
-    potential for the large size, there is no point in subclassing it from EBMLMasterElement.
-
     This element will only read/write child elements from/to a file rather than store them in memory.
     Only addresses for elements in the file will be stored.
     """
@@ -84,6 +81,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         return self
 
     def close(self):
+        """Writes Void elements in unallocated space and closes file."""
         if self._file.writable():
             L = sorted(self._knownChildren.items())
             for (s1, e1), (s2, e2) in zip([(0, 0)] + L[:-1], L):
@@ -108,6 +106,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             self.close()
 
     def seek(self, offset, whence=0):
+        """Seeks file relative to start of offset."""
         if whence == 1:
             return self._file.seek(offset + self._contentsOffset, whence)
         elif whence == 2:
@@ -115,9 +114,15 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         return self._file.seek(offset + self._contentsOffset, whence)
 
     def tell(self):
+        """Returns file offset relative to start of offset."""
         return self._file.tell() - self._contentsOffset
 
     def writeChildElement(self, child):
+        """
+        Write a child element at the current file offset. Raises an exception if a 
+        collision with a sibling or a gap of 1 byte (Void requires two bytes) is detected. 
+        """
+
         offset = self.tell()
         siblingsbefore = {(s, e) for (s, e) in self._knownChildren.items() if s <= offset}
         siblingsafter = {(s, e) for (s, e) in self._knownChildren.items() if s > offset}
@@ -126,7 +131,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             (s, e) = max(siblingsbefore)
             if offset < e:
                 raise WriteError(f"Writing element at offset {offset} collides with sibling at offset {s} (end offset {e}).")
-            if e < offset < e + 2:
+            if offset == e + 1:
                 raise WriteError(f"Element needs to start immediately after, or at least two bytes past the end of sibling at offset {s}.")
 
         childsize = child.size()
@@ -136,7 +141,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
 
             if offset + childsize > s:
                 raise WriteError(f"Writing element at offset {offset} collides with sibling at offset {s} (end offset {e}).")
-            if s - 2 < offset + childsize < s:
+            if offset + childsize == s - 1:
                 raise WriteError(f"Element needs to end immediately before, or at least two bytes before the start of sibling at offset {s}.")
 
         if offset + childsize > 2**(7*self._sizesize) - 2:
@@ -152,6 +157,13 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         return offset
 
     def deleteChildElement(self, offset):
+        """
+        deleteChildElement(offset)
+
+        Deletes reference to child element at specified offset. Space will become
+        allocated by a Void element upon file being closed.
+        """
+
         if not self._file.writable():
             raise io.UnsupportedOperation("write")
 
@@ -163,48 +175,50 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         else:
             self._contentssize = 0
 
-    def readElement(self, withclass, parent=None):
+    def readElement(self, withclass, parent=None, ignore=()):
+        """
+        readElement(withclass, parent=None, ignore=())
+
+        Read element on behalf of a descendent element at the current file offset.
+
+        Returns element of a class specified by 'withclass' (can be either a class, list,
+        tuple, or dict with EBML IDs as keys).
+
+        Advances read position and returns None if it detects an EBML ID specified
+        in 'ignore'.
+        """
+
+        if isinstance(withclass, type) and issubclass(withclass, ebml.base.EBMLElement):
+            withclass = {withclass.ebmlID: withclass}
+
+        elif isinstance(withclass, (list, tuple)):
+            withclass = {cls.ebmlID: cls for cls in withclass}
+
+        ignore = tuple(item.ebmlID if isinstance(item, ebml.base.EBMLElement) else item
+                       for item in ignore)
+
         offset = self.tell()
 
         if offset >= self._contentssize or offset < 0:
-            return None
+            return
 
         ebmlID = ebml.util.peekVint(self._file)
         size = ebml.util.peekVint(self._file, len(ebmlID))
 
-        if ebmlID == ebml.base.Void.ebmlID:
-            child = ebml.base.Void.fromFile(self._file)
-            child.readonly = True
+        if ebmlID in ignore or ebmlID == ebml.base.Void.ebmlID:
+            self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
             return
 
-        if isinstance(withclass, (list, tuple)):
-            for childcls in withclass:
-                if childcls.ebmlID == ebmlID:
-                    break
-            else:
-                self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
-                return
-        elif isinstance(withclass, dict):
-            try:
-                childcls = withclass[ebmlID]
+        if ebmlID not in withclass:
+            raise ReadError(f"Unrecognized EBML ID [{ebml.util.formatBytes(ebmlID)}] at offet {offset} in body, (file offset {offset + self._contentsOffset}).")
 
-            except KeyError:
-                self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
-                return
-
-        else:
-            childcls = withclass
-
-            if childcls.ebmlID is not None and ebmlID != childcls.ebmlID:
-                self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
-                return
-
-        child = childcls.fromFile(self._file, parent=parent)
+        child = withclass[ebmlID].fromFile(self._file, parent=parent)
         child.readonly = True
 
         return child
 
     def readChildElement(self):
+        """Reads a child element at current offset."""
         offset = self.tell()
 
         if offset >= self._contentssize or offset < 0:
@@ -217,17 +231,15 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             if s < offset < e:
                 raise ReadError(f"Offset {offset} is in the middle of a known child at offset {s}.")
 
-        if self.allowunknown:
-            types = tuple(self._childTypes.values()) + (ebml.base.Void, ebml.base.EBMLData)
-        else:
-            types = tuple(self._childTypes.values()) + (ebml.base.Void,)
+        try:
+            child = self.readElement(self._childTypes, parent=self)
 
-        with self.lock:
-            ebmlID = ebml.util.peekVint(self._file)
-            size = ebml.util.peekVint(self._file, len(ebmlID))
-            child = self.readElement(types, parent=self)
+        except ReadError:
+            if self.allowunknown:
+                child = ebml.base.EBMLData.fromFile(self._file, parent=self)
 
-        self._knownChildren[offset] = offset + len(ebmlID) + len(size) + ebml.util.fromVint(size)
+            else:
+                raise
 
         return child
 
@@ -236,6 +248,8 @@ class EBMLBody(ebml.base.EBMLMasterElement):
 
     def scan(self, until=None):
         """
+        scan(until=None)
+
         Scans body for child elements from the last known child before current offset until
         the end of the body, or 'until.'
         """
