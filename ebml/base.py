@@ -599,15 +599,17 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     def parent(self, value):
         if self.readonly:
             raise AttributeError("Cannot set parent for read-only EBMLElement.")
-        elif value is not None and value.readonly:
-            raise AttributeError("Cannot set as child of read-only parent.")
+
         elif self._parentEbmlID is not None:
             if not isinstance(value, EBMLElement):
                 raise ValueError("Parent must be an EBMLElement.")
+
             if isinstance(self._parentEbmlID, bytes) and value.ebmlID != self._parentEbmlID:
                 raise ValueError("Parent must be an EBMLElement with EBML ID {self._parentEbmlID}.")
+
             elif isinstance(self._parentEbmlID, (tuple, list)) and value.ebmlID not in self._parentEbmlID:
                 raise ValueError("Parent must be an EBMLElement with EBML ID {self._parentEbmlID}.")
+
         self._parent = value
 
     @classmethod
