@@ -152,8 +152,8 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         if not child.readonly:
             child.readonly = True
 
-        self._knownChildren[offset] = offset + childsize
-        self._contentssize = max(self._contentssize, offset + childsize)
+        self._knownChildren[offset] = self.tell()
+        self._contentssize = max(self._contentssize, self.tell())
         return offset
 
     def deleteChildElement(self, offset):
@@ -170,8 +170,10 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         del self._knownChildren[offset]
 
         children = list(self._knownChildren.items())
+
         if len(children):
             (s, self._contentssize) = max(children)
+
         else:
             self._contentssize = 0
 
@@ -228,6 +230,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
 
         if len(siblingsbefore):
             (s, e) = max(siblingsbefore)
+
             if s < offset < e:
                 raise ReadError(f"Offset {offset} is in the middle of a known child at offset {s}.")
 
@@ -241,6 +244,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             else:
                 raise
 
+        self._knownChildren[offset] = self.tell()
         return child
 
     def flush(self):
