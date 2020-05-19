@@ -51,6 +51,69 @@ class EBMLProperty(object):
             self._get = self.getobject
             self._set = self.setobject
 
+    @property
+    def __doc__(self):
+        if issubclass(self.cls, EBMLList):
+            if isinstance(self.cls.itemclass, tuple):
+                types = []
+
+                for cls in self.cls.itemclass:
+                    if cls.__module__ == "builtins":
+                        types.append(cls.__name__)
+
+                    else:
+                        types.append(f"{cls.__module__}.{cls.__name__}")
+
+                if len(types) == 1:
+                    typestring = f"List of {types[-1]} objects"
+
+                elif len(types) == 2:
+                    typestring = "List of objects of type" + " or ".join(types)
+
+                else:
+                    typestring = "List of objects of type" + ", ".join(types[:-1]) + ", or " + types[-1]
+
+            elif self.cls.itemclass.__module__ == "builtins":
+                typestring = f"List of {self.cls.itemclass.__name__} objects"
+
+            else:
+                typestring = f"List of {self.cls.itemclass.__module__}.{self.cls.itemclass.__name__} objects"
+
+            if self.optional:
+                return f"List of {self.cls.__module__}.{self.cls.__name__} objects (optional)"
+
+            return f"List of {self.cls.itemclass.__module__}.{self.cls.itemclass.__name__} objects (required)"
+
+        elif isinstance(self.cls, tuple):
+            types = []
+
+            for cls in self.cls:
+                if cls.__module__ == "builtins":
+                    types.append(cls.__name__)
+
+                else:
+                    types.append(f"{cls.__module__}.{cls.__name__}")
+
+            if len(types) == 1:
+                typestring = f"{types[-1]} object"
+
+            elif len(types) == 2:
+                typestring = "object of type" + " or ".join(types)
+
+            else:
+                typestring = "object of type" + ", ".join(types[:-1]) + ", or " + types[-1]
+
+        elif self.cls.__module__ == "builtins":
+            typestring = f"{self.cls.__name__} object"
+
+        else:
+            typestring = f"{self.cls.__module__}.{self.cls.__name__} object"
+
+        if self.optional:
+            return f"{typestring} (optional)"
+
+        return f"{typestring} (required)"
+
     def __get__(self, inst=None, cls=None):
         if inst is None:
             return self
@@ -295,8 +358,12 @@ class EBMLList(list):
 
 class EBMLElementMetaClass(type):
     def __new__(cls, name, bases, dct):
-        cls._prepare(cls, bases, dct)
-        return super().__new__(cls, name, bases, dct)
+        newcls = super().__new__(cls, name, bases, dct)
+        newcls._prepare()
+        if "__init__" not in newcls.__dict__:
+            newcls._generate__init__()
+
+        return newcls
 
     def __getattribute__(cls, attrname):
         attr = super(EBMLElementMetaClass, cls).__getattribute__(attrname)
@@ -374,8 +441,6 @@ class EBMLElementMetaClass(type):
             elif isinstance(default, (int, float, complex)):
                 astargs.defaults.append(ast.Num(value=default, lineno=1, col_offset=len(s + f"{arg}=")))
 
-            #argdefs.append(default)
-
             if j < N - 1:
                 s += f"{arg}={repr(default)}, "
             else:
@@ -387,114 +452,95 @@ class EBMLElementMetaClass(type):
 
         return fcn
 
-    def _prepare(self, bases, dct):
-        if "ebmlID" in dct and isinstance(dct["ebmlID"], bytes):
-            dct["ebmlID"] = Constant(dct["ebmlID"])
-
-        __init__body = []
-        L = 2
-
+    def _generate__init__(cls):
         optional = []
         defaults = []
-        args = []
-
-        __ebmlproperties__ = dct.get("__ebmlproperties__")
-
-        ancestorclasses = list(bases)
-
-        while __ebmlproperties__ is None and len(ancestorclasses):
-            ancestorclass = ancestorclasses.pop(0)
-
-            if isinstance(ancestorclass, tuple):
-                ancestorclasses.extend(ancestorclass)
-                continue
-
-            if not isinstance(ancestorclass, EBMLElementMetaClass):
-                continue
-
-            if hasattr(ancestorclass, "__ebmlproperties__"):
-                __ebmlproperties__ = getattr(ancestorclass, "__ebmlproperties__")
+        required = []
+        __init__body = []
+        __ebmlproperties__ = cls.__ebmlproperties__
+        L = 2
 
         for prop in __ebmlproperties__:
-            if isinstance(prop, EBMLProperty):
-                if prop.optional:
-                    optional.append(prop.attrname)
-                    defaults.append(None)
+            if prop.optional:
+                optional.append(prop.attrname)
+                defaults.append(None)
 
-                    if L > 1:
-                        L += 1
-
-                    ifstmt = self._makeIfNotNone(prop.attrname, L, "    ")
-                    __init__body.append(ifstmt)
+                if L > 1:
                     L += 1
 
-                    assign = self._makeAttrAssign("self", prop.attrname, prop.attrname, L, "        ")
+                ifstmt = cls._makeIfNotNone(prop.attrname, L, "    ")
+                __init__body.append(ifstmt)
+                L += 1
+
+                assign = cls._makeAttrAssign("self", prop.attrname, prop.attrname, L, "        ")
+                ifstmt.body.append(assign)
+                L += 1
+
+                if isinstance(prop.cls, EBMLElement):
+                    assign = cls._makeAttrAssign(f"_{prop.attrname}", "parent", "self", L, "        ")
                     ifstmt.body.append(assign)
                     L += 1
 
-                    if isinstance(prop.cls, EBMLElement):
-                        assign = self._makeAttrAssign(f"_{prop.attrname}", "parent", "self", L, "        ")
-                        ifstmt.body.append(assign)
-                        L += 1
-
-                    L += 1
-
-                else:
-                    args.append(prop.attrname)
-
-                    assign = self._makeAttrAssign("self", prop.attrname, prop.attrname, L, "    ")
-                    __init__body.append(assign)
-                    L += 1
-
-                    if isinstance(prop.cls, EBMLElement):
-                        assign = self._makeAttrAssign(f"_{prop.attrname}", "parent", "self", L, "    ")
-                        __init__body.body.append(assign)
-                        L += 1
-
-                if prop.attrname not in dct:
-                    dct[prop.attrname] = prop
+                L += 1
 
             else:
-                raise TypeError("Expected 'property' object.")
+                required.append(prop.attrname)
 
-        if not isinstance(dct.get("ebmlID"), Constant):
-            args.append("ebmlID")
-            assign = self._makeAttrAssign("self", "ebmlID", "ebmlID", L, "    ")
+                assign = cls._makeAttrAssign("self", prop.attrname, prop.attrname, L, "    ")
+                __init__body.append(assign)
+                L += 1
+
+                if isinstance(prop.cls, EBMLElement):
+                    assign = cls._makeAttrAssign(f"_{prop.attrname}", "parent", "self", L, "    ")
+                    __init__body.body.append(assign)
+                    L += 1
+
+        if not isinstance(cls.__dict__.get("ebmlID"), Constant):
+            required.append("ebmlID")
+            assign = cls._makeAttrAssign("self", "ebmlID", "ebmlID", L, "    ")
             __init__body.append(assign)
             L += 1
 
-        assign = self._makeAttrAssign("self", "readonly", "readonly", L, "    ")
+        assign = cls._makeAttrAssign("self", "readonly", "readonly", L, "    ")
         __init__body.append(assign)
         L += 1
 
         if L > 1:
             L += 1
 
-        ifstmt = self._makeIfNotNone("parent", L, "    ")
+        ifstmt = cls._makeIfNotNone("parent", L, "    ")
         __init__body.append(ifstmt)
         L += 1
 
-        assign = self._makeAttrAssign("self", "parent", "parent", L, "        ")
+        assign = cls._makeAttrAssign("self", "parent", "parent", L, "        ")
         ifstmt.body.append(assign)
         L += 2
 
         optional.extend(["readonly", "parent"])
         defaults.extend([False, None])
-        __init__ = self._makeFcnDef("__init__", args+optional, defaults, __init__body)
+        __init__ = cls._makeFcnDef("__init__", required+optional, defaults, __init__body)
 
-        if "__init__" not in dct:
-            mod = ast.Module(body=[__init__])
+        mod = ast.Module(body=[__init__])
+        module_code = compile(mod, 'Automatically-generated __init__', 'exec')
 
-            module_code = compile(mod, 'Automatically-generated __init__', 'exec')
+        func_code = [c for c in module_code.co_consts
+            if isinstance(c, types.CodeType)][0]
 
-            func_code = [c for c in module_code.co_consts
-                if isinstance(c, types.CodeType)][0]
+        cls.__init__ = types.FunctionType(func_code, {},
+            argdefs=tuple(defaults))
 
-            dct["__init__"] = types.FunctionType(func_code, {"AttributeError": AttributeError},
-                argdefs=tuple(defaults))
+        if astor is not None:
+            cls.__init__body__ = astor.to_source(__init__)
 
-            if astor is not None:
-                dct["__init__body__"] = astor.to_source(__init__)
+    def _prepare(cls):
+        if "ebmlID" in cls.__dict__ and isinstance(cls.ebmlID, bytes):
+            super().__setattr__("ebmlID", Constant(cls.ebmlID))
+
+        __ebmlproperties__ = cls.__ebmlproperties__
+
+        for prop in __ebmlproperties__:
+            if prop.attrname not in cls.__dict__:
+                setattr(cls, prop.attrname, prop)
 
 class EBMLElement(object, metaclass=EBMLElementMetaClass):
     _parentEbmlID = None
@@ -598,17 +644,17 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     @parent.setter
     def parent(self, value):
         if self.readonly:
-            raise AttributeError("Cannot set parent for read-only EBMLElement.")
+            raise AttributeError(f"Cannot set parent for read-only {type(self).__name__} element.")
 
         elif self._parentEbmlID is not None:
             if not isinstance(value, EBMLElement):
-                raise ValueError("Parent must be an EBMLElement.")
+                raise ValueError(f"Parent of {type(self).__name__} element must be an EBMLElement.")
 
             if isinstance(self._parentEbmlID, bytes) and value.ebmlID != self._parentEbmlID:
-                raise ValueError("Parent must be an EBMLElement with EBML ID {self._parentEbmlID}.")
+                raise ValueError(f"Parent of {type(self).__name__} element must be an EBMLElement with EBML ID {self._parentEbmlID}.")
 
             elif isinstance(self._parentEbmlID, (tuple, list)) and value.ebmlID not in self._parentEbmlID:
-                raise ValueError("Parent must be an EBMLElement with EBML ID {self._parentEbmlID}.")
+                raise ValueError(f"Parent of {type(self).__name__} element must be an EBMLElement with EBML ID {self._parentEbmlID}.")
 
         self._parent = value
 
@@ -654,7 +700,6 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         size = ebml.util.fromVint(ebml.util.readVint(file))
 
         if cls.ebmlID is not None:
-            #print((ebmlID, cls.ebmlID))
             if ebmlID != cls.ebmlID:
                 raise NoMatch
 
@@ -911,56 +956,52 @@ class CRC32(EBMLData):
     ebmlID = b"\xbf"
 
 class EBMLMasterElementMetaClass(EBMLElementMetaClass):
-    def _prepare(cls, bases, dct):
-        __ebmlproperties__ = dct.get("__ebmlproperties__", ())
-        __ebmlchildren__ = dct.get("__ebmlchildren__", ())
+    def _prepare(cls):
+        __ebmladdproperties__ = cls.__ebmladdproperties__
+        __ebmlchildren__ = cls.__dict__.get("__ebmlchildren__", ())
         __ebmlpropertiesbyid__ = {}
 
         childTypes = {Void.ebmlID: Void, CRC32.ebmlID: CRC32}
 
         for prop in __ebmlchildren__:
-            if isinstance(prop, EBMLProperty):
-                if issubclass(prop.cls, EBMLElement):
-                    if prop.cls.ebmlID is not None and prop.cls.ebmlID not in childTypes:
-                        childTypes[prop.cls.ebmlID] = prop.cls
-                        __ebmlpropertiesbyid__[prop.cls.ebmlID] = prop
+            if issubclass(prop.cls, EBMLElement):
+                if prop.cls.ebmlID is not None and prop.cls.ebmlID not in childTypes:
+                    childTypes[prop.cls.ebmlID] = prop.cls
+                    __ebmlpropertiesbyid__[prop.cls.ebmlID] = prop
 
-                elif issubclass(prop.cls, EBMLList):
-                    if isinstance(prop.cls.itemclass, tuple):
-                        for cls in prop.cls.itemclass:
-                            if cls.ebmlID is not None and cls.ebmlID not in childTypes:
-                                childTypes[cls.ebmlID] = cls
-                                __ebmlpropertiesbyid__[cls.ebmlID] = prop
-
-                    else:
-                        if prop.cls.itemclass.ebmlID not in childTypes:
-                            childTypes[prop.cls.itemclass.ebmlID] = prop.cls.itemclass
-                            __ebmlpropertiesbyid__[prop.cls.itemclass.ebmlID] = prop
+            elif issubclass(prop.cls, EBMLList):
+                if isinstance(prop.cls.itemclass, tuple):
+                    for childcls in prop.cls.itemclass:
+                        if childcls.ebmlID is not None and cls.ebmlID not in childTypes:
+                            childTypes[childcls.ebmlID] = childcls
+                            __ebmlpropertiesbyid__[childcls.ebmlID] = prop
 
                 else:
-                    raise ValueError("What gives?")
+                    if prop.cls.itemclass.ebmlID not in childTypes:
+                        childTypes[prop.cls.itemclass.ebmlID] = prop.cls.itemclass
+                        __ebmlpropertiesbyid__[prop.cls.itemclass.ebmlID] = prop
 
             else:
-                raise TypeError("Expected 'EBMLProperty' object.")
+                raise ValueError("What gives?")
 
-        if dct.get("allowunknown", False):
+        if cls.allowunknown:
             ebmlchildren = EBMLList.makesubclass("EBMLChildList", tuple(childTypes.values()) + (EBMLData,))
         else:
             ebmlchildren = EBMLList.makesubclass("EBMLChildList", tuple(childTypes.values()))
 
-        dct["__ebmlproperties__"] = tuple(__ebmlchildren__) + tuple(__ebmlproperties__) + (EBMLProperty("children", ebmlchildren, optional=True),)
-        dct["__ebmlpropertiesbyid__"] = __ebmlpropertiesbyid__
+        cls.__ebmlproperties__ = tuple(__ebmlchildren__) + tuple(__ebmladdproperties__) + (EBMLProperty("children", ebmlchildren, optional=True),)
+        cls.__ebmlpropertiesbyid__ = __ebmlpropertiesbyid__
         
-
-        if "_childTypes" in dct:
-            dct["_childTypes"].update(childTypes)
+        if hasattr(cls, "_childTypes"):
+            cls._childTypes.update(childTypes)
         else:
-            dct["_childTypes"] = childTypes
+            cls._childTypes = childTypes
 
-        EBMLElementMetaClass._prepare(cls, bases, dct)
+        super()._prepare()
 
 class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
     __ebmlchildren__ = ()
+    __ebmladdproperties__ = ()
     allowunknown = False
 
     def iterchildren(self):
@@ -1028,7 +1069,7 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
                     L.append(child)
 
                 else:
-                    if hasattr(self, f"_{prop.attrname}"):
+                    if hasattr(self, f"_{prop.attrname}") and getattr(self, prop.attrname) is not None:
                         raise TypeError(f"Too many child elements of type '{prop.cls.__name__}' provided.")
 
                     prop.__set__(self, child)
