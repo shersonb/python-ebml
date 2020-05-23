@@ -68,21 +68,16 @@ class EBMLProperty(object):
                     typestring = f"List of {types[-1]} objects"
 
                 elif len(types) == 2:
-                    typestring = "List of objects of type" + " or ".join(types)
+                    typestring = "List of objects of type " + " or ".join(types)
 
                 else:
-                    typestring = "List of objects of type" + ", ".join(types[:-1]) + ", or " + types[-1]
+                    typestring = "List of objects of type " + ", ".join(types[:-1]) + ", or " + types[-1]
 
             elif self.cls.itemclass.__module__ == "builtins":
                 typestring = f"List of {self.cls.itemclass.__name__} objects"
 
             else:
                 typestring = f"List of {self.cls.itemclass.__module__}.{self.cls.itemclass.__name__} objects"
-
-            if self.optional:
-                return f"List of {self.cls.__module__}.{self.cls.__name__} objects (optional)"
-
-            return f"List of {self.cls.itemclass.__module__}.{self.cls.itemclass.__name__} objects (required)"
 
         elif isinstance(self.cls, tuple):
             types = []
@@ -98,10 +93,10 @@ class EBMLProperty(object):
                 typestring = f"{types[-1]} object"
 
             elif len(types) == 2:
-                typestring = "object of type" + " or ".join(types)
+                typestring = "object of type " + " or ".join(types)
 
             else:
-                typestring = "object of type" + ", ".join(types[:-1]) + ", or " + types[-1]
+                typestring = "object of type " + ", ".join(types[:-1]) + ", or " + types[-1]
 
         elif self.cls.__module__ == "builtins":
             typestring = f"{self.cls.__name__} object"
@@ -1092,7 +1087,7 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
                 else:
                     prop.__set__(self, None)
 
-        l = [prop.cls.itemclass.__name__ if issubclass(prop.cls, EBMLList) else prop.cls.__name for prop in missing]
+        l = [prop.cls.itemclass.__name__ if issubclass(prop.cls, EBMLList) else prop.cls.__name__ for prop in missing]
 
         if len(missing) == 1:
             raise DecodeError(f"Missing required element: {l[0]}.")
