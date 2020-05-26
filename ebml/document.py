@@ -215,6 +215,11 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             raise ReadError(f"Unrecognized EBML ID [{ebml.util.formatBytes(ebmlID)}] at offet {offset} in body, (file offset {offset + self._contentsOffset}).")
 
         child = withclass[ebmlID].fromFile(self._file, parent=parent)
+
+        if parent is self:
+            child.offsetInParent = offset
+            child.dataOffsetInParent = offset + len(ebmlID) + len(size)
+
         child.readonly = True
 
         return child

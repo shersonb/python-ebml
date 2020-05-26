@@ -539,7 +539,10 @@ class EBMLElementMetaClass(type):
 
 class EBMLElement(object, metaclass=EBMLElementMetaClass):
     _parentEbmlID = None
-    __ebmlproperties__ = ()
+    __ebmlproperties__ = (
+            EBMLProperty("offsetInParent", int, optional=True),
+            EBMLProperty("dataOffsetInParent", int, optional=True)
+        )
 
     def __init__(self, data, ebmlID=None, readonly=False, parent=None):
         if ebmlID is not None:
@@ -683,7 +686,12 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         if len(data) != contentsize:
             raise EncodeError(f"{self}: Length of data ({len(data)}) does not match advertised length ({contentsize}).")
 
-        return self.ebmlID + ebml.util.toVint(contentsize) + data
+        head = self.ebmlID + ebml.util.toVint(contentsize)
+
+        if self.offsetInParent is not None:
+            self.dataOffsetInParent = self.offsetInParent + len(head)
+
+        return head + data
 
     def _toBytes(self, file):
         """To be implemented in subclasses"""
@@ -1031,12 +1039,14 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
         data = b""
 
         for child in self.iterchildren():
+            child.offsetInParent = len(data)
             data += child.toBytes()
 
         return data
 
     def _decodeData(self, data):
         children = []
+        offset = 0
 
         while len(data):
             ebmlID, sizesize, size = self._peekHeader(data)
@@ -1051,6 +1061,8 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
                 raise DecodeError(f"Unrecognized EBML ID {ebml.util.formatBytes(ebmlID)}.")
 
             child = childcls._fromBytes(data[len(ebmlID) + sizesize:len(ebmlID) + sizesize + size], parent=self)
+            child.offsetInParent = offset
+            child.dataOffsetInParent = offset + len(ebmlID) + sizesize
             children.append(child)
 
             if ebmlID in self.__ebmlpropertiesbyid__:
@@ -1077,6 +1089,7 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
                     raise TypeError(f"Unexpected type '{child.__class__.__name__}' for type '{self.__name__}'.")
 
             data = data[len(ebmlID) + sizesize + size:]
+            offset += len(ebmlID) + sizesize + size
 
         missing = []
 
