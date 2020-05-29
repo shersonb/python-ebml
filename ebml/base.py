@@ -214,6 +214,7 @@ class EBMLList(list):
     def __init_subclass__(cls):
         if isinstance(cls.itemclass, type) and issubclass(cls.itemclass, EBMLData):
             cls.__init__ = cls.__init_data__
+            cls.__iter__ = cls.__iter_data__
             cls.__getitem__ = cls.getdata
             cls.__setitem__ = cls.setdata
             cls.append = cls.appenddata
@@ -239,6 +240,10 @@ class EBMLList(list):
                 raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
 
         list.__init__(self, items)
+
+    def __iter_data__(self):
+        for obj in list.__iter__(self):
+            yield obj.data
 
     def _castdata(self, data):
         if isinstance(data, self.itemclass):
@@ -1046,11 +1051,8 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
 
     def _decodeData(self, data):
         children = []
-        offset = 0
 
-        while len(data):
-            ebmlID, sizesize, size = self._peekHeader(data)
-
+        for offset, ebmlID, sizesize, data in self.parse(data):
             if self.allowunknown:
                 childcls = self._childTypes.get(ebmlID, EBMLData)
 
@@ -1060,7 +1062,7 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
             if childcls is None:
                 raise DecodeError(f"Unrecognized EBML ID {ebml.util.formatBytes(ebmlID)}.")
 
-            child = childcls._fromBytes(data[len(ebmlID) + sizesize:len(ebmlID) + sizesize + size], parent=self)
+            child = childcls._fromBytes(data, parent=self)
             child.offsetInParent = offset
             child.dataOffsetInParent = offset + len(ebmlID) + sizesize
             children.append(child)
@@ -1087,9 +1089,6 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
             else:
                 if not isinstance(child, (Void, CRC32)):
                     raise TypeError(f"Unexpected type '{child.__class__.__name__}' for type '{self.__name__}'.")
-
-            data = data[len(ebmlID) + sizesize + size:]
-            offset += len(ebmlID) + sizesize + size
 
         missing = []
 
@@ -1142,3 +1141,12 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
 
         new.__init__(**kwargs)
         return new
+
+    @classmethod
+    def parse(cls, data):
+        offset = 0
+
+        while offset < len(data):
+            ebmlID, sizesize, size = cls._peekHeader(data[offset:])
+            yield (offset, ebmlID, sizesize, data[offset + len(ebmlID) + sizesize:offset + len(ebmlID) + sizesize + size])
+            offset += len(ebmlID) + sizesize + size
