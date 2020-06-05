@@ -237,7 +237,7 @@ class EBMLList(list):
 
         for item in items:
             if not isinstance(item, self.itemclass):
-                raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
+                raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
 
         list.__init__(self, items)
 
@@ -693,7 +693,7 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
 
         head = self.ebmlID + ebml.util.toVint(contentsize)
 
-        if self.offsetInParent is not None:
+        if self.offsetInParent is not None and not self.readonly:
             self.dataOffsetInParent = self.offsetInParent + len(head)
 
         return head + data
@@ -750,18 +750,19 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
 
     @classmethod
     def fromBytes(cls, data, parent=None):
-        ebmlID, sizesize, size = cls._peekHeader(data)
+        ebmlID, data = ebml.util.parseVint(data)
+        size, data = ebml.util.parseVint(data)
 
         if cls.ebmlID is not None and cls.ebmlID != ebmlID:
             h = "".join([f"[{x:02x}]" for x in ebmlID])
             raise NoMatch(f"Data does not begin with EBML ID {h}.")
 
-        if len(data) != size + sizesize + len(ebmlID):
+        if len(data) != ebml.util.fromVint(size):
             raise DecodeError("Data length not consistent with encoded length.")
 
         if cls.ebmlID is None:
-            return cls._fromBytes(data[sizesize + len(ebmlID):], ebmlID=ebmlID, parent=parent)
-        return cls._fromBytes(data[sizesize + len(ebmlID):], parent=parent)
+            return cls._fromBytes(data, ebmlID=ebmlID, parent=parent)
+        return cls._fromBytes(data, parent=parent)
 
     @classmethod
     def _fromBytes(cls, data, ebmlID=None, parent=None):
@@ -906,7 +907,7 @@ class EBMLInteger(EBMLData):
 
     def _toBytes(self):
         k = self._size()
-        return self.data.to_bytes(k, "big")
+        return self.data.to_bytes(k, "big", signed=self.signed)
 
     def _size(self):
         if self.signed:
@@ -923,7 +924,7 @@ class EBMLInteger(EBMLData):
         if cls.ebmlID is None:
             return cls(n, ebmlID=ebmlID, parent=parent)
 
-        return cls(int.from_bytes(data, byteorder="big"), parent=parent)
+        return cls(int.from_bytes(data, byteorder="big", signed=cls.signed), parent=parent)
 
     #@classmethod
     #def _fromBytes(cls, data, ebmlID=None, parent=None):
@@ -1044,7 +1045,9 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
         data = b""
 
         for child in self.iterchildren():
-            child.offsetInParent = len(data)
+            if not self.readonly and not child.readonly:
+                child.offsetInParent = len(data)
+
             data += child.toBytes()
 
         return data
@@ -1052,7 +1055,7 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
     def _decodeData(self, data):
         children = []
 
-        for offset, ebmlID, sizesize, data in self.parse(data):
+        for offset, ebmlID, sizesize, data in ebml.util.parseElements(data):
             if self.allowunknown:
                 childcls = self._childTypes.get(ebmlID, EBMLData)
 
@@ -1141,12 +1144,3 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
 
         new.__init__(**kwargs)
         return new
-
-    @classmethod
-    def parse(cls, data):
-        offset = 0
-
-        while offset < len(data):
-            ebmlID, sizesize, size = cls._peekHeader(data[offset:])
-            yield (offset, ebmlID, sizesize, data[offset + len(ebmlID) + sizesize:offset + len(ebmlID) + sizesize + size])
-            offset += len(ebmlID) + sizesize + size
