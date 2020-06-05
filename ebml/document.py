@@ -289,6 +289,16 @@ class EBMLBody(ebml.base.EBMLMasterElement):
     def _fromBytes(cls, data, ebmlID=None, parent=None):
         raise NotImplementedError("Use self.readChildElement()) to readfile.")
 
+    @property
+    def contentsOffset(self):
+        return self._contentsOffset
+
+    @property
+    def contentsSize(self):
+        return self._contentssize
+
+
+
 class EBMLDocument(object):
     def __init__(self, file, mode="r", bodycls=EBMLBody):
         if "b" not in mode:
@@ -362,3 +372,7 @@ class EBMLDocument(object):
     @property
     def close(self):
         return self.body.close
+
+    @property
+    def fileSize(self):
+        return self.body.contentsOffset + self.body.contentsSize
