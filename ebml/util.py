@@ -28,18 +28,6 @@ def toVint(n, size=0):
         return ((1 << (7*size)) | n).to_bytes(size, "big")
 
 def readVint(file):
-    if isinstance(file, bytes):
-        x = file[0]
-
-        for k in range(1, 9):
-            if x & (1 << (8 - k)):
-                if len(file) < k:
-                    raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
-
-                return file[:k]
-
-        raise ValueError("Invalid Vint.")
-
     b = file.read(1)
 
     if len(b) == 0:
@@ -72,3 +60,72 @@ def peekVint(file, peekoffset=0):
 
             return data[peekoffset:peekoffset+k]
 
+def parseVint(data):
+    x = data[0]
+
+    for k in range(1, 9):
+        if x & (1 << (8 - k)):
+            if len(data) < k:
+                raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
+
+            return data[:k], data[k:]
+
+    raise ValueError("Invalid Vint.")
+
+def parseVints(data):
+    N = len(data)
+    offset = 0
+
+    while offset < N:
+        x = data[offset]
+
+        for k in range(1, 9):
+            if x & (1 << (8 - k)):
+                if len(data) < offset + k:
+                    raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
+
+                yield data[offset : offset + k]
+                offset += k
+                break
+
+def parseElements(data):
+    offset = 0
+    n = len(data)
+
+    while offset < n:
+        x = data[offset]
+
+        for k in range(1, 9):
+            if x & (1 << (8 - k)):
+                if n < offset + k:
+                    raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
+
+                ebmlID = data[offset: offset + k]
+                offset += k
+                break
+
+        else:
+            raise ValueError("Invalid Vint.")
+
+        x = data[offset]
+
+        for k in range(1, 9):
+            if x & (1 << (8 - k)):
+                if n < offset + k:
+                    raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
+
+                vsize = data[offset: offset + k]
+                size = fromVint(vsize)
+                offset += k
+                break
+
+        else:
+            raise ValueError("Invalid Vint.")
+
+
+        if n < offset + size:
+            raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
+
+        yield (offset, ebmlID, k, data[offset : offset + size])
+
+        offset += size
