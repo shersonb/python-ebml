@@ -237,7 +237,7 @@ class EBMLList(list):
 
         for item in items:
             if not isinstance(item, self.itemclass):
-                raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
+                raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.__name__} instead.")
 
         list.__init__(self, items)
 
@@ -539,8 +539,7 @@ class EBMLElementMetaClass(type):
         __ebmlproperties__ = cls.__ebmlproperties__
 
         for prop in __ebmlproperties__:
-            if prop.attrname not in cls.__dict__:
-                setattr(cls, prop.attrname, prop)
+            setattr(cls, prop.attrname, prop)
 
 class EBMLElement(object, metaclass=EBMLElementMetaClass):
     _parentEbmlID = None
@@ -926,18 +925,6 @@ class EBMLInteger(EBMLData):
 
         return cls(int.from_bytes(data, byteorder="big", signed=cls.signed), parent=parent)
 
-    #@classmethod
-    #def _fromBytes(cls, data, ebmlID=None, parent=None):
-        #n = int.from_bytes(data, byteorder="big")
-        #self = cls.__new__(cls)
-        #self._data = n
-        #self._parent = parent
-
-        #if cls.ebmlID is None:
-            #self._ebmlID = ebmlID
-
-        #return self
-
 class EBMLFloat(EBMLData):
     __ebmlproperties__ = (EBMLProperty("data", float),)
 
@@ -964,6 +951,22 @@ class EBMLFloat(EBMLData):
 class CRC32(EBMLData):
     ebmlID = b"\xbf"
 
+def _addChildType(prop, cls, childTypes, __ebmlpropertiesbyid__):
+    if isinstance(cls, (list, tuple)):
+        for subcls in cls:
+            _addChildType(prop, subcls, childTypes, __ebmlpropertiesbyid__)
+
+    elif isinstance(cls, type) and issubclass(cls, EBMLElement):
+        if cls.ebmlID is not None and cls.ebmlID not in childTypes:
+            childTypes[cls.ebmlID] = cls
+            __ebmlpropertiesbyid__[cls.ebmlID] = prop
+
+    elif isinstance(cls, type) and issubclass(prop.cls, EBMLList):
+        _addChildType(prop, cls.itemclass, childTypes, __ebmlpropertiesbyid__)
+
+    else:
+        raise TypeError("Expected EBMLElement subclass, EBMLList subclass, or list/tuple thereof. Got {cls} instead.")
+
 class EBMLMasterElementMetaClass(EBMLElementMetaClass):
     def _prepare(cls):
         __ebmladdproperties__ = cls.__ebmladdproperties__
@@ -973,28 +976,11 @@ class EBMLMasterElementMetaClass(EBMLElementMetaClass):
         childTypes = {Void.ebmlID: Void, CRC32.ebmlID: CRC32}
 
         for prop in __ebmlchildren__:
-            if issubclass(prop.cls, EBMLElement):
-                if prop.cls.ebmlID is not None and prop.cls.ebmlID not in childTypes:
-                    childTypes[prop.cls.ebmlID] = prop.cls
-                    __ebmlpropertiesbyid__[prop.cls.ebmlID] = prop
-
-            elif issubclass(prop.cls, EBMLList):
-                if isinstance(prop.cls.itemclass, tuple):
-                    for childcls in prop.cls.itemclass:
-                        if childcls.ebmlID is not None and cls.ebmlID not in childTypes:
-                            childTypes[childcls.ebmlID] = childcls
-                            __ebmlpropertiesbyid__[childcls.ebmlID] = prop
-
-                else:
-                    if prop.cls.itemclass.ebmlID not in childTypes:
-                        childTypes[prop.cls.itemclass.ebmlID] = prop.cls.itemclass
-                        __ebmlpropertiesbyid__[prop.cls.itemclass.ebmlID] = prop
-
-            else:
-                raise ValueError("What gives?")
+            _addChildType(prop, prop.cls, childTypes, __ebmlpropertiesbyid__)
 
         if cls.allowunknown:
             ebmlchildren = EBMLList.makesubclass("EBMLChildList", tuple(childTypes.values()) + (EBMLData,))
+
         else:
             ebmlchildren = EBMLList.makesubclass("EBMLChildList", tuple(childTypes.values()))
 
