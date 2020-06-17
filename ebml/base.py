@@ -53,7 +53,7 @@ class EBMLProperty(object):
 
     @property
     def __doc__(self):
-        if issubclass(self.cls, EBMLList):
+        if isinstance(self.cls, type) and issubclass(self.cls, EBMLList):
             if isinstance(self.cls.itemclass, tuple):
                 types = []
 
@@ -155,21 +155,11 @@ class EBMLProperty(object):
 
             setattr(inst, self._attrname, value)
 
-        elif issubclass(self.cls, (EBMLElement, EBMLList)):
-            try:
-                value = self.cls(value, parent=inst)
-
-            except TypeError as exc:
-                exc.args = (f"Invalid type {type(value).__name__} for '{self.attrname}' attribute of {type(inst).__name__} object.",)
-                raise
+        elif isinstance(self.cls, type) and issubclass(self.cls, (EBMLElement, EBMLList)):
+            value = self.cls(value, parent=inst)
 
         else:
-            try:
-                value = self.cls(value)
-
-            except TypeError as exc:
-                exc.args = (f"Invalid type {type(value).__name__} for '{self.attrname}' attribute of {type(inst).__name__} object.",)
-                raise
+            value = self.cls(value)
 
         setattr(inst, self._attrname, value)
 
@@ -237,7 +227,10 @@ class EBMLList(list):
 
         for item in items:
             if not isinstance(item, self.itemclass):
-                raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.__name__} instead.")
+                raise TypeError(f"Item must be of class {self.itemclass.__name__}, got {item.__class__.__name__} instead.")
+
+            if isinstance(item, EBMLElement):
+                item.parent = parent
 
         list.__init__(self, items)
 
@@ -273,6 +266,9 @@ class EBMLList(list):
             if not isinstance(item, self.itemclass):
                 raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
 
+            if isinstance(item, EBMLElement):
+                item.parent = self.parent
+
         list.extend(self, items)
 
     def appenddata(self, item):
@@ -287,6 +283,9 @@ class EBMLList(list):
         if not isinstance(item, self.itemclass):
             raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
 
+        if isinstance(item, EBMLElement):
+            item.parent = self.parent
+
         list.append(self, item)
 
     def insertdata(self, index, item):
@@ -299,6 +298,9 @@ class EBMLList(list):
 
         if not isinstance(item, self.itemclass):
             raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
+
+        if isinstance(item, EBMLElement):
+            item.parent = self.parent
 
         list.insert(self, index, item)
 
@@ -320,6 +322,10 @@ class EBMLList(list):
     def setobject(self, index, item):
         self._checkReadOnly()
         item = self._castdata(item)
+
+        if isinstance(item, EBMLElement):
+            item.parent = self.parent
+
         list.__setitem__(self, index, item)
 
     def setdata(self, index, item):
@@ -358,8 +364,12 @@ class EBMLList(list):
 
 class EBMLElementMetaClass(type):
     def __new__(cls, name, bases, dct):
+        if "_childTypes" not in dct:
+            dct["_childTypes"] = {}
+
         newcls = super().__new__(cls, name, bases, dct)
         newcls._prepare()
+
         if "__init__" not in newcls.__dict__:
             newcls._generate__init__()
 
@@ -545,7 +555,8 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     _parentEbmlID = None
     __ebmlproperties__ = (
             EBMLProperty("offsetInParent", int, optional=True),
-            EBMLProperty("dataOffsetInParent", int, optional=True)
+            EBMLProperty("dataOffsetInParent", int, optional=True),
+            EBMLProperty("dataSize", int, optional=True)
         )
 
     def __init__(self, data, ebmlID=None, readonly=False, parent=None):
@@ -753,8 +764,9 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         size, data = ebml.util.parseVint(data)
 
         if cls.ebmlID is not None and cls.ebmlID != ebmlID:
-            h = "".join([f"[{x:02x}]" for x in ebmlID])
-            raise NoMatch(f"Data does not begin with EBML ID {h}.")
+            h = "".join([f"[{x:02x}]" for x in cls.ebmlID])
+            g = "".join([f"[{x:02x}]" for x in ebmlID])
+            raise NoMatch(f"Expected EBML ID {h}, got {g} instead.")
 
         if len(data) != ebml.util.fromVint(size):
             raise DecodeError("Data length not consistent with encoded length.")
@@ -766,7 +778,7 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     @classmethod
     def _fromBytes(cls, data, ebmlID=None, parent=None):
         """To be implemented in subclasses"""
-        raise NotImplementedError()
+        raise NotImplementedError(f"Please implement {cls.__module__}.{cls.__name__}._fromBytes")
 
     def __repr__(self):
         params = []
@@ -900,8 +912,16 @@ class EBMLInteger(EBMLData):
 
     @data.sethook
     def data(self, value):
+        try:
+            value = int(value)
+
+        except TypeError:
+            print(value)
+            raise TypeError(f"Cannot convert {value.__class__.__name__} object to integer for {self.__class__.__name__} element.")
+
         if value < 0 and not self.signed:
             raise ValueError("Signed integers not supported.")
+
         return value
 
     def _toBytes(self):
@@ -961,6 +981,13 @@ def _addChildType(prop, cls, childTypes, __ebmlpropertiesbyid__):
             childTypes[cls.ebmlID] = cls
             __ebmlpropertiesbyid__[cls.ebmlID] = prop
 
+        if cls is EBMLElement:
+            if 0 in __ebmlpropertiesbyid__:
+                raise ValueError(f"Can only specify one default property.")
+
+            __ebmlpropertiesbyid__[0] = prop
+            childTypes[0] = cls
+
     elif isinstance(cls, type) and issubclass(prop.cls, EBMLList):
         _addChildType(prop, cls.itemclass, childTypes, __ebmlpropertiesbyid__)
 
@@ -970,7 +997,7 @@ def _addChildType(prop, cls, childTypes, __ebmlpropertiesbyid__):
 class EBMLMasterElementMetaClass(EBMLElementMetaClass):
     def _prepare(cls):
         __ebmladdproperties__ = cls.__ebmladdproperties__
-        __ebmlchildren__ = cls.__dict__.get("__ebmlchildren__", ())
+        __ebmlchildren__ = cls.__ebmlchildren__
         __ebmlpropertiesbyid__ = {}
 
         childTypes = {Void.ebmlID: Void, CRC32.ebmlID: CRC32}
@@ -1013,6 +1040,14 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
                 elif isinstance(child, EBMLElement):
                     yield child
 
+    @classmethod
+    def _getChildCls(cls, ebmlID):
+        if cls.allowunknown:
+            return cls._childTypes.get(ebmlID, EBMLData)
+
+        else:
+            return cls._childTypes.get(ebmlID)
+
     @EBMLElement.readonly.setter
     def readonly(self, value):
         if self.readonly:
@@ -1042,24 +1077,22 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
         children = []
 
         for offset, ebmlID, sizesize, data in ebml.util.parseElements(data):
-            if self.allowunknown:
-                childcls = self._childTypes.get(ebmlID, EBMLData)
-
-            else:
-                childcls = self._childTypes.get(ebmlID)
+            childcls = self._getChildCls(ebmlID)
 
             if childcls is None:
-                raise DecodeError(f"Unrecognized EBML ID {ebml.util.formatBytes(ebmlID)}.")
+                raise DecodeError(f"Unrecognized EBML ID {ebml.util.formatBytes(ebmlID)} while attempting to decode {self.__class__.__name__} Element.")
 
             child = childcls._fromBytes(data, parent=self)
             child.offsetInParent = offset
             child.dataOffsetInParent = offset + len(ebmlID) + sizesize
+            child.dataSize = len(data)
             children.append(child)
 
-            if ebmlID in self.__ebmlpropertiesbyid__:
-                prop = self.__ebmlpropertiesbyid__[ebmlID]
+            default = self.__ebmlpropertiesbyid__.get(0)
+            prop = self.__ebmlpropertiesbyid__.get(ebmlID, default)
 
-                if issubclass(prop.cls, EBMLList):
+            if prop is not None:
+                if isinstance(prop.cls, type) and issubclass(prop.cls, EBMLList):
                     if not hasattr(self, f"_{prop.attrname}"):
                         prop.__set__(self, [])
 
@@ -1073,11 +1106,11 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
                     prop.__set__(self, child)
 
             elif not isinstance(child, (Void, CRC32)) and not self.allowunknown:
-                raise TypeError(f"Unexpected type '{child.__class__.__name__}' for type '{self.__name__}'.")
+                raise TypeError(f"Unexpected child type '{child.__class__.__name__}' for EBML Element '{self.__class__.__name__}'.")
 
             else:
                 if not isinstance(child, (Void, CRC32)):
-                    raise TypeError(f"Unexpected type '{child.__class__.__name__}' for type '{self.__name__}'.")
+                    raise TypeError(f"Unexpected child type '{child.__class__.__name__}' for EBML Element '{self.__class__.__name__}'.")
 
         missing = []
 
@@ -1091,11 +1124,11 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
         l = [prop.cls.itemclass.__name__ if issubclass(prop.cls, EBMLList) else prop.cls.__name__ for prop in missing]
 
         if len(missing) == 1:
-            raise DecodeError(f"Missing required element: {l[0]}.")
+            raise DecodeError(f"Error decoding {self.__class__.__name__} element: Missing required element: {l[0]}.")
         elif len(missing) == 2:
-            raise DecodeError(f"Missing required elements: {l[0]} and {l[1]}.")
+            raise DecodeError(f"Error decoding {self.__class__.__name__} element: Missing required elements: {l[0]} and {l[1]}.")
         elif len(missing) > 2:
-            raise DecodeError(f"Missing required elements: {', '.join(l[:-1])}, and {l[-1]}.")
+            raise DecodeError(f"Error decoding {self.__class__.__name__} element: Missing required elements: {', '.join(l[:-1])}, and {l[-1]}.")
 
         self.children = children
 

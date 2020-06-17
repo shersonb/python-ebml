@@ -1,4 +1,3 @@
-# ((str, align, copy), (3, byteorder, (base, shape), names, fields, itemsize, alignment, flags))
 import numpy
 from ebml.base import EBMLInteger, EBMLString, EBMLData, EBMLMasterElement, EBMLList, EBMLProperty
 from ebml.util import toVint, fromVint, parseVints, parseElements
@@ -15,15 +14,13 @@ class Copy(EBMLInteger):
 class ByteOrder(EBMLString):
     ebmlID = b"\x94"
 
-# Base is again a dtype
-
 class Shape(EBMLData):
     ebmlID = b"\x95"
     __ebmlproperties__ = (EBMLProperty("data", tuple),)
 
     @classmethod
     def _fromBytes(cls, data, parent=None):
-        return cls(tuple(fromVint(b) for b in parseVints(data)), parent=None)
+        return cls(tuple(fromVint(b) for b in parseVints(data)), parent=parent)
 
     def _toBytes(self):
         return b"".join(toVint(k) for k in self.data)
@@ -164,20 +161,21 @@ class EBMLNDArray(EBMLData):
         dtype = None
         shape = None
         arraydata = None
-        for (offset, ebmlID, k, data) in parseElements(data):
-            if ebmlID == EBMLArrayData.ebmlID:
-                arraydata = EBMLArrayData._fromBytes(data)
 
-            elif ebmlID == Shape.ebmlID:
+        for (offset, childEbmlID, k, data) in parseElements(data):
+            if childEbmlID == EBMLArrayData.ebmlID:
+                arraydata = data
+
+            elif childEbmlID == Shape.ebmlID:
                 shape = Shape._fromBytes(data)
 
-            elif ebmlID == DType.ebmlID:
+            elif childEbmlID == DType.ebmlID:
                 dtype = DType._fromBytes(data)
 
         if ebmlID is not None:
-            return cls(numpy.frombuffer(arraydata.data, dtype=dtype.toNumpy()).reshape(shape.data), ebmlID=ebmlID, parent=parent)
+            return cls(numpy.frombuffer(arraydata, dtype=dtype.toNumpy()).reshape(shape.data), ebmlID=ebmlID, parent=parent)
 
-        return cls(numpy.frombuffer(arraydata.data, dtype=dtype.toNumpy()).reshape(shape.data), parent=parent)
+        return cls(numpy.frombuffer(arraydata, dtype=dtype.toNumpy()).reshape(shape.data), parent=parent)
 
     @property
     def dtype(self):

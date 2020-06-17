@@ -95,37 +95,37 @@ def parseElements(data):
     while offset < n:
         x = data[offset]
 
-        for k in range(1, 9):
-            if x & (1 << (8 - k)):
-                if n < offset + k:
+        for j in range(1, 9):
+            if x & (1 << (8 - j)):
+                if n < offset + j:
                     raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
 
-                ebmlID = data[offset: offset + k]
-                offset += k
+                ebmlID = data[offset: offset + j]
+                #offset += k
                 break
 
         else:
             raise ValueError("Invalid Vint.")
 
-        x = data[offset]
+        x = data[offset + j]
 
         for k in range(1, 9):
             if x & (1 << (8 - k)):
-                if n < offset + k:
+                if n < offset + j + k:
                     raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
 
-                vsize = data[offset: offset + k]
+                vsize = data[offset + j: offset + j + k]
                 size = fromVint(vsize)
-                offset += k
+                #offset += k
                 break
 
         else:
             raise ValueError("Invalid Vint.")
 
 
-        if n < offset + size:
+        if n < offset + j + k + size:
             raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
 
-        yield (offset, ebmlID, k, data[offset : offset + size])
+        yield (offset, ebmlID, k, data[offset + j + k: offset + j + k+ size])
 
-        offset += size
+        offset += j + k + size
