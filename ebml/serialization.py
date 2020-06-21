@@ -56,7 +56,6 @@ class Rational(EBMLData):
         numdata, dendata = parseVints(data)
         return cls(QQ(fromVint(numdata) - 2**(7*len(numdata) - 1), fromVint(dendata)), parent=parent)
 
-
 class Complex(EBMLData):
     ebmlID = b"\x8b"
     __ebmlproperties__ = (EBMLProperty("data", complex),)

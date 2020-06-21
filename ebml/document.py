@@ -1,12 +1,13 @@
-import ebml.base
-import ebml.head
-import ebml.util
+from ebml.base import EBMLMasterElement, EBMLElement, Void, EBMLData
+from ebml.head import EBMLHead
+from ebml.util import readVint, fromVint, toVint, formatBytes, peekVint
+from ebml.exceptions import UnexpectedEndOfData
 import io
 import threading
 
 from ebml.exceptions import ReadError, WriteError
 
-class EBMLBody(ebml.base.EBMLMasterElement):
+class EBMLBody(EBMLMasterElement):
     """
     This element will only read/write child elements from/to a file rather than store them in memory.
     Only addresses for elements in the file will be stored.
@@ -28,7 +29,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             try:
                 self._init_read()
 
-            except ebml.util.UnexpectedEndOfData:
+            except UnexpectedEndOfData:
                 if not self._file.writable():
                     raise
 
@@ -54,18 +55,18 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         self._contentsOffset = self._file.tell()
 
     def _init_read(self):
-        ebmlID = ebml.util.readVint(self._file)
+        ebmlID = readVint(self._file)
 
         if self.ebmlID is not None:
             if self.ebmlID != ebmlID:
-                raise ReadError(f"Incorrect EBML ID found. Expected '{ebml.util.formatBytes(self.ebmlID)},' got '{ebml.util.formatBytes(ebmlID)}' instead.")
+                raise ReadError(f"Incorrect EBML ID found. Expected '{formatBytes(self.ebmlID)},' got '{formatBytes(ebmlID)}' instead.")
         else:
             self.ebmlID = ebmlID
 
         self._sizeOffset = self._file.tell()
-        size = ebml.util.readVint(self._file)
+        size = readVint(self._file)
         self._sizesize = len(size)
-        self._contentssize = ebml.util.fromVint(size)
+        self._contentssize = fromVint(size)
         self._contentsOffset = self._file.tell()
 
     def _writeVoid(self, size):
@@ -74,7 +75,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
                 break
 
         self._file.write(b"\xec")
-        self._file.write(ebml.util.toVint(size - 1 - k, k))
+        self._file.write(toVint(size - 1 - k, k))
 
     @property
     def body(self):
@@ -98,7 +99,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
             self.seek(e)
             self._file.truncate()
             self.seek(-self._sizesize)
-            self._file.write(ebml.util.toVint(e, self._sizesize))
+            self._file.write(toVint(e, self._sizesize))
         self._file.close()
 
     def __del__(self):
@@ -190,13 +191,13 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         in 'ignore'.
         """
 
-        if isinstance(withclass, type) and issubclass(withclass, ebml.base.EBMLElement):
+        if isinstance(withclass, type) and issubclass(withclass, EBMLElement):
             withclass = {withclass.ebmlID: withclass}
 
         elif isinstance(withclass, (list, tuple)):
             withclass = {cls.ebmlID: cls for cls in withclass}
 
-        ignore = tuple(item.ebmlID if isinstance(item, ebml.base.EBMLElement) else item
+        ignore = tuple(item.ebmlID if isinstance(item, EBMLElement) else item
                        for item in ignore)
 
         offset = self.tell()
@@ -204,15 +205,15 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         if offset >= self._contentssize or offset < 0:
             return
 
-        ebmlID = ebml.util.peekVint(self._file)
-        size = ebml.util.peekVint(self._file, len(ebmlID))
+        ebmlID = peekVint(self._file)
+        size = peekVint(self._file, len(ebmlID))
 
-        if ebmlID in ignore or ebmlID == ebml.base.Void.ebmlID:
-            self._file.seek(len(ebmlID) + len(size) + ebml.util.fromVint(size), 1)
+        if ebmlID in ignore or ebmlID == Void.ebmlID:
+            self._file.seek(len(ebmlID) + len(size) + fromVint(size), 1)
             return
 
         if ebmlID not in withclass:
-            raise ReadError(f"Unrecognized EBML ID [{ebml.util.formatBytes(ebmlID)}] at offet {offset} in body, (file offset {offset + self._contentsOffset}).")
+            raise ReadError(f"Unrecognized EBML ID [{formatBytes(ebmlID)}] at offet {offset} in body, (file offset {offset + self._contentsOffset}).")
 
         child = withclass[ebmlID].fromFile(self._file, parent=parent)
 
@@ -244,7 +245,7 @@ class EBMLBody(ebml.base.EBMLMasterElement):
 
         except ReadError:
             if self.allowunknown:
-                child = ebml.base.EBMLData.fromFile(self._file, parent=self)
+                child = EBMLData.fromFile(self._file, parent=self)
 
             else:
                 raise
@@ -277,13 +278,13 @@ class EBMLBody(ebml.base.EBMLMasterElement):
         while offset < until:
             with self.lock:
                 self.seek(offset)
-                ebmlID = ebml.util.peekVint(self._file)
-                size = ebml.util.peekVint(self._file, len(ebmlID))
+                ebmlID = peekVint(self._file)
+                size = peekVint(self._file, len(ebmlID))
 
-            if ebmlID != ebml.base.Void.ebmlID:
-                self._knownChildren[offset] = offset + len(ebmlID) + len(size) + ebml.util.fromVint(size)
+            if ebmlID != Void.ebmlID:
+                self._knownChildren[offset] = offset + len(ebmlID) + len(size) + fromVint(size)
 
-            offset += len(ebmlID) + len(size) + ebml.util.fromVint(size)
+            offset += len(ebmlID) + len(size) + fromVint(size)
 
     @classmethod
     def _fromBytes(cls, data, ebmlID=None, parent=None):
@@ -317,7 +318,7 @@ class EBMLDocument(object):
         """
         This should be overridden in subclasses if you are looking to handle specific document types.
         """
-        self.head = ebml.head.EBMLHead.fromFile(self._file)
+        self.head = EBMLHead.fromFile(self._file)
         self.body = self._bodycls(self._file)
 
     def _init_write(self):

@@ -1,5 +1,5 @@
-import ebml.util
-import ebml.base
-import ebml.head
-import ebml.document
+from . import util
+from . import base
+from . import head
+from . import document
 __version__ = "0.0.1"
