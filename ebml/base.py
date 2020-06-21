@@ -264,7 +264,7 @@ class EBMLList(list):
 
         for item in items:
             if not isinstance(item, self.itemclass):
-                raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
+                raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.__name__} instead.")
 
             if isinstance(item, EBMLElement):
                 item.parent = self.parent
@@ -281,7 +281,7 @@ class EBMLList(list):
         self._checkReadOnly()
 
         if not isinstance(item, self.itemclass):
-            raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
+            raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.__name__} instead.")
 
         if isinstance(item, EBMLElement):
             item.parent = self.parent
@@ -297,7 +297,7 @@ class EBMLList(list):
         self._checkReadOnly()
 
         if not isinstance(item, self.itemclass):
-            raise TypeError("Item must be of class {self.itemclass}, got {item.__class__.name} instead.")
+            raise TypeError(f"Item must be of class {self.itemclass}, got {item.__class__.__name__} instead.")
 
         if isinstance(item, EBMLElement):
             item.parent = self.parent
