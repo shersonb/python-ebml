@@ -7,6 +7,7 @@ from fractions import Fraction as QQ
 import importlib
 import warnings
 import types
+from _collections_abc import list_iterator, generator
 
 class Bytes(EBMLData):
     ebmlID = b"\x81"
@@ -170,13 +171,12 @@ class BaseObj(EBMLMasterElement):
         if environ is None:
             environ = {}
 
-        if id(obj) in refs:
+        if id(obj) in refs and not isinstance(obj, (list_iterator, generator)):
             return Ref(refs[id(obj)])
 
         elem = cls._fromObj(obj, environ, refs)
 
         if hasattr(elem, "objID") and elem.objID is not None:
-            #print(id(obj), type(obj), obj)
             refs[id(obj)] = elem.objID
 
         return elem
@@ -216,7 +216,6 @@ class BaseObj(EBMLMasterElement):
         obj = self._createObj(environ, refs)
 
         if self.objID:
-            #print(self.objID, obj)
             refs[self.objID] = obj
 
         try:
@@ -281,6 +280,14 @@ class List(BaseObj):
             EBMLProperty("objID", ObjID, optional=True),
             EBMLProperty("items", Items, optional=True)
         )
+
+    #@classmethod
+    #def fromObj(cls, obj, environ=None, refs=None):
+        #if isinstance(obj, (list_iterator, generator)):
+            #return super().fromObj(list(obj), environ, refs)
+
+        #else:
+            #return super().fromObj(obj, environ, refs)
 
     def __iter__(self):
         return iter(self.items)
@@ -357,7 +364,6 @@ class Dict(BaseObj):
     @classmethod
     def _fromObj(cls, obj, environ, refs):
         ref = cls._createRef(refs)
-        #print(id(obj), type(obj), obj)
         refs[id(obj)] = ref
         return cls(items=[cls._wrapChild(child, environ, refs) for child in obj.items()], objID=ref)
 
