@@ -24,6 +24,7 @@ class EBMLBody(EBMLMasterElement):
 
         self.parent = parent
         self._knownChildren = {}
+        self._modified = False
 
         if "r" in file.mode:
             try:
@@ -69,6 +70,11 @@ class EBMLBody(EBMLMasterElement):
         self._contentssize = fromVint(size)
         self._contentsOffset = self._file.tell()
 
+        if self._file.writable():
+            self.seek(0)
+            self.scan()
+            self.seek(0)
+
     def _writeVoid(self, size):
         for k in range(1, 9):
             if size - 1 - k < 128**k - 1:
@@ -83,7 +89,7 @@ class EBMLBody(EBMLMasterElement):
 
     def close(self):
         """Writes Void elements in unallocated space and closes file."""
-        if self._file.writable():
+        if self._modified and self._file.writable():
             L = sorted(self._knownChildren.items())
             for (s1, e1), (s2, e2) in zip([(0, 0)] + L[:-1], L):
                 if e1 < s2:
@@ -155,6 +161,7 @@ class EBMLBody(EBMLMasterElement):
 
         self._knownChildren[offset] = self.tell()
         self._contentssize = max(self._contentssize, self.tell())
+        self._modified = True
         return offset
 
     def deleteChildElement(self, offset):
@@ -177,6 +184,8 @@ class EBMLBody(EBMLMasterElement):
 
         else:
             self._contentssize = 0
+
+        self._modified = True
 
     def readElement(self, withclass, parent=None, ignore=()):
         """
