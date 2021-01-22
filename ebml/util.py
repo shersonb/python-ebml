@@ -31,7 +31,7 @@ def readVint(file):
     b = file.read(1)
 
     if len(b) == 0:
-        raise UnexpectedEndOfData("Unexpected End of Data while scanning variable-length integer")
+        return b""
 
     x = int.from_bytes(b, byteorder="big")
 
@@ -129,3 +129,27 @@ def parseElements(data):
         yield (offset, ebmlID, k, data[offset + j + k: offset + j + k+ size])
 
         offset += j + k + size
+
+def parseFile(file, size=None):
+    nextoffset = start = file.tell()
+
+    while True:
+        if size is not None and nextoffset >= start + size:
+            break
+
+        file.seek(nextoffset)
+        ebmlID = readVint(file)
+
+        if ebmlID == b"":
+            raise StopIteration
+
+        esize = readVint(file)
+        isize = fromVint(esize)
+
+        if size is not None and nextoffset > start + size:
+            raise UnexpectedEndOfData("EBML Element extends past end of data.")
+
+        yield (nextoffset, ebmlID, esize,
+               nextoffset + len(ebmlID) + len(esize), isize)
+
+        nextoffset += len(ebmlID) + len(esize) + isize
