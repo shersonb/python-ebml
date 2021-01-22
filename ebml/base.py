@@ -5,6 +5,7 @@ import binascii
 import ebml.util
 import ast
 from itertools import count
+import weakref
 
 try:
     import astor
@@ -220,7 +221,7 @@ class EBMLList(list):
 
     def __init_data__(self, items=[], parent=None):
         self.parent = parent
-        list.__init__(self, [self._castdata(item) for item in items])
+        list.__init__(self, [self._wrapitem(item) for item in items])
 
     def __init_object__(self, items=[], parent=None):
         self.parent = parent
@@ -238,7 +239,7 @@ class EBMLList(list):
         for obj in list.__iter__(self):
             yield obj.data
 
-    def _castdata(self, data):
+    def _wrapitem(self, data):
         if isinstance(data, self.itemclass):
             data.parent = self.parent
             return data
@@ -247,17 +248,16 @@ class EBMLList(list):
 
     def copy(self, parent=None):
         cls = type(self)
+        newitems = [item.copy() if hasattr(item, "copy") and callable(item.copy)
+                    else item
+                    for item in self]
 
-        if hasattr(self.itemclass, "copy") and callable(self.itemclass.copy):
-            new = cls([item.copy() for item in list.__iter__(self)], parent=parent)
-            return new
-
-        return cls(list.__iter__(self), parent=parent)
+        return cls(newitems, parent=parent)
 
     def extenddata(self, items):
         self._checkReadOnly()
 
-        list.extend(self, [self._castdata(item) for item in items])
+        list.extend(self, [self._wrapitem(item) for item in items])
 
     def extendobject(self, items):
         self._checkReadOnly()
@@ -274,7 +274,7 @@ class EBMLList(list):
     def appenddata(self, item):
         self._checkReadOnly()
 
-        item = self._castdata(item)
+        item = self._wrapitem(item)
         list.append(self, item)
 
     def appendobject(self, item):
@@ -290,7 +290,7 @@ class EBMLList(list):
 
     def insertdata(self, index, item):
         self._checkReadOnly()
-        item = self._castdata(item)
+        item = self._wrapitem(item)
         list.insert(self, index, item)
 
     def insertobject(self, index, item):
@@ -321,7 +321,12 @@ class EBMLList(list):
 
     def setobject(self, index, item):
         self._checkReadOnly()
-        item = self._castdata(item)
+
+        if isinstance(index, slice):
+            item = map(self._wrapitem, item)
+
+        else:
+            item = self._wrapitem(item)
 
         if isinstance(item, EBMLElement):
             item.parent = self.parent
@@ -347,11 +352,19 @@ class EBMLList(list):
 
     @property
     def parent(self):
+        if isinstance(self._parent, weakref.ref):
+            return self._parent()
+
         return self._parent
 
     @parent.setter
     def parent(self, value):
-        self._parent = value
+        try:
+            self._parent = weakref.ref(value)
+
+        except TypeError:
+            self._parent = value
+
         for item in self:
             item.parent = value
 
@@ -650,7 +663,11 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     @property
     def parent(self):
         try:
+            if isinstance(self._parent, weakref.ref):
+                return self._parent()
+
             return self._parent
+
         except:
             return
 
@@ -669,7 +686,11 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
             elif isinstance(self._parentEbmlID, (tuple, list)) and value.ebmlID not in self._parentEbmlID:
                 raise ValueError(f"Parent of {type(self).__name__} element must be an EBMLElement with EBML ID {self._parentEbmlID}.")
 
-        self._parent = value
+        try:
+            self._parent = weakref.ref(value)
+
+        except TypeError:
+            self._parent = value
 
     @classmethod
     def makesubclass(cls, clsName, **attributes):
