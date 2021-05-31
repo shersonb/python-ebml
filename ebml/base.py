@@ -6,6 +6,8 @@ import ebml.util
 import ast
 from itertools import count
 import weakref
+import sys
+import io
 
 try:
     import astor
@@ -382,10 +384,6 @@ class EBMLElementMetaClass(type):
 
         newcls = super().__new__(cls, name, bases, dct)
         newcls._prepare()
-
-        if "__init__" not in newcls.__dict__:
-            newcls._generate__init__()
-
         return newcls
 
     def __getattribute__(cls, attrname):
@@ -564,6 +562,9 @@ class EBMLElementMetaClass(type):
         for prop in __ebmlproperties__:
             setattr(cls, prop.attrname, prop)
 
+        if "__init__" not in cls.__dict__:
+            cls._generate__init__()
+
 class EBMLElement(object, metaclass=EBMLElementMetaClass):
     _parentEbmlID = None
     __ebmlproperties__ = (
@@ -699,6 +700,12 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     def size(self):
         """Returns total size (in bytes) of element, including header and size element"""
         contentsize = self._size()
+
+        if not isinstance(contentsize, int):
+            raise TypeError(
+                f"Invalid return value for {self.__class__.__name__}._size(). "
+                f"Got '{type(contentsize).__name__}' instead.")
+
         return len(self.ebmlID) + len(ebml.util.toVint(contentsize)) + contentsize
 
     def _size(self):
@@ -734,17 +741,46 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         raise NotImplementedError()
 
     @classmethod
+    def _readHead(cls, file):
+        offset = file.tell()
+
+        try:
+            ebmlID = ebml.util.readVint(file)
+            size = ebml.util.readVint(file)
+
+            if cls.ebmlID is not None:
+                if ebmlID != cls.ebmlID:
+                    raise NoMatch
+
+            return (offset, ebmlID, size)
+
+        except NoMatch:
+            raise
+
+        except Exception as exc:
+            raise DecodeError(
+                f"Error reading EBML Element head at offset {offset}.",
+                cls, offset, *sys.exc_info())
+
+    @classmethod
     def fromFile(cls, file, parent=None):
-        ebmlID = ebml.util.readVint(file)
-        size = ebml.util.fromVint(ebml.util.readVint(file))
+        (offset, ebmlID, size) = cls._readHead(file)
 
-        if cls.ebmlID is not None:
-            if ebmlID != cls.ebmlID:
-                raise NoMatch
+        try:
+            size = ebml.util.fromVint(size)
 
-            return cls._fromFile(file, size, parent=parent)
+            if cls.ebmlID is not None:
+                return cls._fromFile(file, size, parent=parent)
 
-        return cls._fromFile(file, size, ebmlID=ebmlID, parent=parent)
+
+            return cls._fromFile(file, size, ebmlID=ebmlID, parent=parent)
+
+        except NoMatch:
+            raise
+
+        except Exception as exc:
+            raise DecodeError(f"Error decoding EBML Element at offset {offset}.",
+                                cls, offset, *sys.exc_info())
 
     @classmethod
     def _fromFile(cls, file, size, ebmlID=None, parent=None):
@@ -756,7 +792,17 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
 
         if ebmlID is not None:
             return cls._fromBytes(data, ebmlID=ebmlID, parent=parent)
+
         return cls._fromBytes(data, parent=parent)
+
+    @classmethod
+    def sniff(cls, file):
+        (offset, ebmlID, size) = cls._readHead(file)
+        return cls._sniff(file, ebml.util.fromVint(size))
+
+    @classmethod
+    def _sniff(cls, file, size):
+        return
 
     @staticmethod
     def _peekHeader(data):
@@ -781,34 +827,44 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
 
     @classmethod
     def fromBytes(cls, data, parent=None):
-        ebmlID, data = ebml.util.parseVint(data)
-        size, data = ebml.util.parseVint(data)
+        try:
+            ebmlID, data = ebml.util.parseVint(data)
+            size, data = ebml.util.parseVint(data)
 
-        if cls.ebmlID is not None and cls.ebmlID != ebmlID:
-            h = "".join([f"[{x:02x}]" for x in cls.ebmlID])
-            g = "".join([f"[{x:02x}]" for x in ebmlID])
-            raise NoMatch(f"Expected EBML ID {h}, got {g} instead.")
+            if cls.ebmlID is not None and cls.ebmlID != ebmlID:
+                h = "".join([f"[{x:02x}]" for x in cls.ebmlID])
+                g = "".join([f"[{x:02x}]" for x in ebmlID])
+                raise NoMatch(f"Expected EBML ID {h}, got {g} instead.")
 
-        if len(data) != ebml.util.fromVint(size):
-            raise DecodeError("Data length not consistent with encoded length.")
+            if len(data) != ebml.util.fromVint(size):
+                raise DecodeError(
+                    f"Data length ({len(data)}) does not match encoded size "
+                    f"({ebml.util.fromVint(size)}).")
 
-        if cls.ebmlID is None:
-            return cls._fromBytes(data, ebmlID=ebmlID, parent=parent)
-        return cls._fromBytes(data, parent=parent)
+            if cls.ebmlID is None:
+                return cls._fromBytes(data, ebmlID=ebmlID, parent=parent)
+
+            return cls._fromBytes(data, parent=parent)
+        except Exception as exc:
+            raise DecodeError(f"Error decoding EBML Element.",
+                                cls, None, *sys.exc_info())
 
     @classmethod
     def _fromBytes(cls, data, ebmlID=None, parent=None):
         """To be implemented in subclasses"""
-        raise NotImplementedError(f"Please implement {cls.__module__}.{cls.__name__}._fromBytes")
+        raise NotImplementedError(
+            f"Please implement {cls.__module__}.{cls.__name__}._fromBytes")
 
     def __repr__(self):
         params = []
+
         for prop in self.__ebmlproperties__:
             if prop.attrname in ("parent", "children"):
                 continue
 
             try:
                 value = prop.__get__(self)
+
             except AttributeError:
                 value = None
 
@@ -822,10 +878,16 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
                 if isinstance(value.itemclass, tuple):
                     classes = "|".join(cls.__name__ for cls in value.itemclass)
                     params.append(f"{prop.attrname}=[({classes})(...), ...]")
+
                 else:
                     params.append(f"{prop.attrname}=[{value.itemclass.__name__}(...), ...]")
+
             else:
                 params.append(f"{prop.attrname}={value}")
+
+        if hasattr(self, "_repr_add") and callable(self._repr_add):
+            params.append(self._repr_add())
+
         params = ", ".join(params)
 
         if len(params):
@@ -842,11 +904,22 @@ class EBMLData(EBMLElement):
     def _toBytes(self):
         return self.data
 
+    @staticmethod
+    def _decodeData(data):
+        return data
+
     @classmethod
     def _fromBytes(cls, data, ebmlID=None, parent=None):
         if ebmlID is not None:
-            return cls(data, ebmlID=ebmlID, parent=parent)
-        return cls(data, parent=parent)
+            return cls(cls._decodeData(data),
+                       ebmlID=ebmlID, parent=parent)
+
+        return cls(cls._decodeData(data), parent=parent)
+
+    @classmethod
+    def _sniff(cls, file, size):
+        data = file.read(size)
+        return cls._decodeData(data)
 
 class EBMLString(EBMLData):
     __ebmlproperties__ = (EBMLProperty("data", str),)
@@ -859,10 +932,9 @@ class EBMLString(EBMLData):
         return self.data.encode(self.encoding)
 
     @classmethod
-    def _fromBytes(cls, data, ebmlID=None, parent=None):
-        if ebmlID is not None:
-            return cls(data.decode(cls.encoding), ebmlID=ebmlID, parent=parent)
-        return cls(data.decode(cls.encoding), parent=parent)
+    def _decodeData(cls, data):
+        return data.decode(cls.encoding)
+
 
 class EBMLDateTime(EBMLData):
     data = EBMLProperty("data", datetime.datetime)
@@ -885,16 +957,20 @@ class EBMLDateTime(EBMLData):
 
     def _size(self):
         x = self.to_int()
+
         for k in range(1, 9):
             if -128*256**(k-1) <= x < 128*256**(k-1):
                 return k
 
-    @classmethod
-    def _fromBytes(cls, data, ebmlID=None, parent=None):
-        if ebmlID is not None:
-            return cls(int.from_bytes(data, byteorder="big"), ebmlID=ebmlID, parent=parent)
+    @staticmethod
+    def _decodeData(data):
+        return int.from_bytes(data, byteorder="big")
 
-        return cls(int.from_bytes(data, byteorder="big"), parent=parent)
+    @classmethod
+    def _sniff(cls, file, size):
+        x = super()._sniff(file, size)
+        return epoch + datetime.timedelta(microseconds=x/1000)
+
 
 class Void(EBMLElement):
     ebmlID = Constant(b"\xec")
@@ -903,9 +979,9 @@ class Void(EBMLElement):
     def _size(self):
         return self.voidsize
 
-    @classmethod
-    def _fromBytes(cls, data, ebmlID=None, parent=None):
-        return cls(len(data), parent=parent)
+    @staticmethod
+    def _decodeData(data):
+        return len(data)
 
     def _toBytes(self):
         return b"\x00"*self.voidsize
@@ -914,16 +990,21 @@ class Void(EBMLElement):
         try:
             file.seek(file.tell() + self.voidsize)
             return
+
         except:
             pass
+
         file.write(b"\x00"*self.voidsize)
 
     @classmethod
     def _fromFile(cls, file, size, ebmlID=None, parent=None):
         try:
+            # Attempt to seek past the data.
             file.seek(file.tell() + size)
-        except:
+
+        except io.UnsupportedOperation:
             file.read(size)
+
         return cls(size, parent=parent)
 
 class EBMLInteger(EBMLData):
@@ -960,11 +1041,9 @@ class EBMLInteger(EBMLData):
                     return k
 
     @classmethod
-    def _fromBytes(cls, data, ebmlID=None, parent=None):
-        if cls.ebmlID is None:
-            return cls(n, ebmlID=ebmlID, parent=parent)
+    def _decodeData(cls, data):
+        return int.from_bytes(data, byteorder="big", signed=cls.signed)
 
-        return cls(int.from_bytes(data, byteorder="big", signed=cls.signed), parent=parent)
 
 class EBMLFloat(EBMLData):
     __ebmlproperties__ = (EBMLProperty("data", float),)
@@ -975,22 +1054,20 @@ class EBMLFloat(EBMLData):
     def _size(self):
         return 8
 
-    @classmethod
-    def _fromBytes(cls, data, ebmlID=None, parent=None):
+    @staticmethod
+    def _decode(data):
         if len(data) == 4:
-            x = struct.unpack(">f", data)[0]
+            return struct.unpack(">f", data)[0]
+
         elif len(data) == 8:
-            x = struct.unpack(">d", data)[0]
-        else:
-            raise DecodeError("Expected data size of either 4 or 8.")
+            return struct.unpack(">d", data)[0]
 
-        if ebmlID is not None:
-            return cls(x, ebmlID=ebmlID, parent=parent)
+        raise DecodeError("Expected data size of either 4 or 8.")
 
-        return cls(x, parent=parent)
 
 class CRC32(EBMLData):
     ebmlID = b"\xbf"
+
 
 def _addChildType(prop, cls, childTypes, __ebmlpropertiesbyid__):
     if isinstance(cls, (list, tuple)):

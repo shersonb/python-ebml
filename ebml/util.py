@@ -3,6 +3,13 @@ import types
 
 from ebml.exceptions import UnexpectedEndOfData
 
+def detectVintSize(n):
+    for k in range(1, 9):
+        if n < 128**k - 1:
+            return k
+
+    raise OverflowError
+
 def fromVint(vint):
     b = vint[0]
     k = len(vint)
@@ -14,18 +21,15 @@ def fromVint(vint):
 
 def toVint(n, size=0):
     if size == 0:
-        for k in range(1, 9):
-            if n < 128**k - 1:
-                return ((1 << (7*k)) | n).to_bytes(k, "big")
+        size = detectVintSize(n)
 
-        else:
-            raise OverflowError
+    if n >= 128**size - 1:
+        raise OverflowError
 
-    else:
-        if n >= 128**size - 1:
-            raise OverflowError
+    return ((1 << (7*size)) | n).to_bytes(size, "big")
 
-        return ((1 << (7*size)) | n).to_bytes(size, "big")
+def toVints(a):
+    return b"".join(map(toVint, a))
 
 def readVint(file):
     b = file.read(1)

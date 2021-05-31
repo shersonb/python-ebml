@@ -1,18 +1,30 @@
-class NoMatch(BaseException):
+class NoMatch(Exception):
     pass
 
-class DecodeError(BaseException):
+class DecodeError(Exception):
+    def __init__(self, message, elementcls, offset=None, excclass=None, exc=None, tb=None):
+        self.elementcls = elementcls
+        self.offset = offset
+        self.excclass = excclass
+        self.exc = exc
+        self.tb = tb
+        if elementcls:
+            super().__init__(f"{message} [{elementcls.__name__}]")
+
+        else:
+            super().__init__(message)
+
+class EncodeError(Exception):
     pass
 
-class EncodeError(BaseException):
+class UnexpectedEndOfData(Exception):
     pass
 
-class UnexpectedEndOfData(BaseException):
+class WriteError(Exception):
     pass
 
-class WriteError(BaseException):
+class ReadError(Exception):
     pass
 
-class ReadError(BaseException):
+class ResizeError(Exception):
     pass
-
