@@ -1055,7 +1055,7 @@ class EBMLFloat(EBMLData):
         return 8
 
     @staticmethod
-    def _decode(data):
+    def _decodeData(data):
         if len(data) == 4:
             return struct.unpack(">f", data)[0]
 
