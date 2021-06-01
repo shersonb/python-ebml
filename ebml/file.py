@@ -286,18 +286,18 @@ class EBMLMasterElementInFile(EBMLElement):
 
         self.file.seek(self.dataOffsetInFile)
 
-        for (nextoffset, ebmlID, esize, coffset, isize) in parseFile(
-                self.file, self.dataSize):
-            #T.lap(f"Iteration: {nextoffset}")
-            if ebmlID != Void.ebmlID:
-                #T.lap(f"Not Void: {nextoffset}")
-                self._scanchild(nextoffset - self.dataOffsetInFile,
-                                ebmlID, esize, coffset, isize)
-                #T.lap(f"Scanned: {nextoffset}")
+        for (offsetInFile, ebmlID, vsize,
+             dataOffsetInFile, isize) in parseFile(
+                 self.file, self.dataSize):
 
-    def _scanchild(self, offset, ebmlID, esize, coffset, isize):
+            if ebmlID != Void.ebmlID:
+                self._scanchild(
+                    offsetInFile - self.dataOffsetInFile, ebmlID, vsize,
+                    dataOffsetInFile - self.dataOffsetInFile, isize)
+
+    def _scanchild(self, offset, ebmlID, vsize, dataoffset, isize):
         self._children[offset] = (
-            ebmlID, None, coffset + isize - self.dataOffsetInFile)
+            ebmlID, None, dataoffset + isize)
         # bisect.insort(self._childoffsets, offset)
 
         # It is safe to assume that this function is being called on
