@@ -587,6 +587,9 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
             return self.parent.body
 
     def copy(self, parent=None):
+        """
+        Creates an deep copy of existing instance.
+        """
         cls = type(self)
         new = cls.__new__(cls)
         kwargs = {}
@@ -609,6 +612,7 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     def ebmlID(self):
         try:
             return self._ebmlID
+
         except AttributeError:
             return None
 
@@ -651,8 +655,7 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
     def readonly(self):
         if hasattr(self, "_readonly") and self._readonly:
             return True
-        #if hasattr(self, "_parent") and self.parent is not None and self.parent.readonly:
-            #return True
+
         return False
 
     @readonly.setter
@@ -713,6 +716,9 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         raise NotImplementedError()
 
     def toFile(self, file):
+        """
+        Writes EBML data to file.
+        """
         contentsize = self._size()
         file.write(self.ebmlID)
         file.write(ebml.util.toVint(contentsize))
@@ -723,6 +729,9 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         file.write(self._toBytes())
 
     def toBytes(self):
+        """
+        Returns the EBML data as a byte string.
+        """
         contentsize = self._size()
         data = self._toBytes()
 
@@ -764,6 +773,9 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
 
     @classmethod
     def fromFile(cls, file, parent=None):
+        """
+        Creates an instance using data from file.
+        """
         (offset, ebmlID, size) = cls._readHead(file)
 
         try:
@@ -797,6 +809,11 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
 
     @classmethod
     def sniff(cls, file):
+        """
+        Without creating an instance, reads data from file. The default
+        behavior of this function will be to return what will be the data
+        attribute if an instance is created using fromFile(file).⎄
+        """
         (offset, ebmlID, size) = cls._readHead(file)
         return cls._sniff(file, ebml.util.fromVint(size))
 
@@ -972,7 +989,7 @@ class EBMLDateTime(EBMLData):
         return epoch + datetime.timedelta(microseconds=x/1000)
 
 
-class Void(EBMLElement):
+class Void(EBMLData):
     ebmlID = Constant(b"\xec")
     __ebmlproperties__ = (EBMLProperty("voidsize", int),)
 
@@ -1237,9 +1254,7 @@ class EBMLMasterElement(EBMLElement, metaclass=EBMLMasterElementMetaClass):
     def _fromBytes(cls, data, ebmlID=None, parent=None):
         self = cls.__new__(cls)
         self.parent = parent
-
         self._decodeData(data)
-
         return self
 
     def copy(self, parent=None):
