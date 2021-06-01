@@ -443,7 +443,9 @@ class EBMLElementMetaClass(type):
             required = args
             optional = ()
 
-        astargs = ast.arguments(args=[], vararg=None, defaults=[], kwonlyargs=[], kw_defaults=[], kwarg=None)
+        astargs = ast.arguments(
+            args=[], vararg=None, defaults=[], kwonlyargs=[],
+            kw_defaults=[], posonlyargs=[], kwarg=None)
 
         s = f"{indent}def {name}("
 
@@ -542,7 +544,7 @@ class EBMLElementMetaClass(type):
         defaults.extend([False, None])
         __init__ = cls._makeFcnDef("__init__", required+optional, defaults, __init__body)
 
-        mod = ast.Module(body=[__init__])
+        mod = ast.Module(body=[__init__], type_ignores=[])
         module_code = compile(mod, 'Automatically-generated __init__', 'exec')
 
         func_code = [c for c in module_code.co_consts
