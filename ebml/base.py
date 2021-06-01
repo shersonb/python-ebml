@@ -368,7 +368,8 @@ class EBMLList(list):
             self._parent = value
 
         for item in self:
-            item.parent = value
+            if isinstance(item, EBMLElement):
+                item.parent = value
 
     @property
     def readonly(self):
