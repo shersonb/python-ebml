@@ -1317,7 +1317,7 @@ class EBMLMasterElementInFile(EBMLElement):
 
     def _tryMoveChildElement(self, offset, newoffset):
         try:
-            self._tryMoveElement(offset, newoffset)
+            self._tryMoveChildElement(offset, newoffset)
 
         except WriteError:
             return False
