@@ -9,6 +9,8 @@ import weakref
 import sys
 import io
 
+from .util import Constant
+
 try:
     import astor
 except ModuleNotFoundError:
@@ -26,16 +28,6 @@ __all__ = ["Constant", "EBMLProperty", "EBMLList", "EBMLElement", "EBMLData", "E
            "EBMLDateTime", "Void", "EBMLInteger", "EBMLFloat", "CRC32", "EBMLMasterElement"]
 
 epoch = datetime.datetime(2001, 1, 1)
-
-class Constant(object):
-    def __init__(self, value):
-        self.value = value
-
-    def __get__(self, inst=None, cls=None):
-        if inst is None:
-            return self
-
-        return self.value
 
 class EBMLProperty(object):
     def __init__(self, attrname, cls, optional=False, sethook=None, default=None):
@@ -906,7 +898,10 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
                 params.append(f"{prop.attrname}={value}")
 
         if hasattr(self, "_repr_add") and callable(self._repr_add):
-            params.append(self._repr_add())
+            add = self._repr_add()
+
+            if add:
+                params.append(add)
 
         params = ", ".join(params)
 
@@ -940,6 +935,18 @@ class EBMLData(EBMLElement):
     def _sniff(cls, file, size):
         data = file.read(size)
         return cls._decodeData(data)
+
+    def __bytes__(self):
+        return bytes(self.data)
+
+    def __str__(self):
+        return str(self.data)
+
+    def __int__(self):
+        return int(self.data)
+
+    def __float__(self):
+        return float(self.data)
 
 class EBMLString(EBMLData):
     __ebmlproperties__ = (EBMLProperty("data", str),)
