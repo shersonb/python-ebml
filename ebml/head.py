@@ -10,9 +10,6 @@ class EBMLVersion(EBMLInteger):
 class EBMLReadVersion(EBMLInteger):
     ebmlID = b"\x42\xf7"
 
-class EBMLReadVersion(EBMLInteger):
-    ebmlID = b"\x42\xf7"
-
 class EBMLMaxIDLength(EBMLInteger):
     ebmlID = b"\x42\xf2"
 
