@@ -9,5 +9,5 @@ setup(
     author_email='caretaker82@gmail.com',
     url='https://github.com/shersonb/python-ebml',
     packages=['ebml'],
-    ext_modules=cythonize("ebml/vint.pyx")
+    ext_modules=cythonize("ebml/*.pyx")
 )
