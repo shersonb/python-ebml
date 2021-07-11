@@ -154,11 +154,12 @@ cdef class parseFile:
 
         return val
 
+
 cdef class parseElements:
     cdef:
         object _data
         unsigned long long _offset
-        long long _size
+        unsigned long long _size
 
     def __cinit__(self, bytes data):
         self._data = data

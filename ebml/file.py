@@ -1,5 +1,9 @@
-from .base import EBMLMasterElement, EBMLElement, Void, CRC32, EBMLData, EBMLProperty
-from .util import parseFile, readVint, fromVint, toVint, detectVintSize
+from .base import (EBMLMasterElement, EBMLElement, Void, CRC32, EBMLData,
+                   EBMLProperty)
+from .vint import parseFile, readVint, fromVint, toVint, detectVintSize
+from .util import (_fallocate, NoInterrupt, FALLOC_FL_KEEP_SIZE,
+                   FALLOC_FL_PUNCH_HOLE, FALLOC_FL_COLLAPSE_RANGE,
+                   FALLOC_FL_INSERT_RANGE)
 from .exceptions import *
 from threading import RLock as Lock
 import weakref
@@ -7,58 +11,7 @@ import signal
 import os
 import bisect
 import time
-
-import ctypes
-import ctypes.util
-
-c_off_t = ctypes.c_int64
-
-def make_fallocate():
-    libc_name = ctypes.util.find_library('c')
-    libc = ctypes.CDLL(libc_name)
-
-    _fallocate = libc.fallocate
-    _fallocate.restype = ctypes.c_int
-    _fallocate.argtypes = [ctypes.c_int, ctypes.c_int, c_off_t, c_off_t]
-
-    del libc
-    del libc_name
-
-    def fallocate(fd, mode, offset, len_):
-        res = _fallocate(fd.fileno(), mode, offset, len_)
-        if res != 0:
-            raise IOError(res, 'fallocate')
-
-    return fallocate
-
-_fallocate = make_fallocate()
-del make_fallocate
-
-FALLOC_FL_KEEP_SIZE = 0x01
-FALLOC_FL_PUNCH_HOLE = 0x02
-FALLOC_FL_COLLAPSE_RANGE = 0x08
-FALLOC_FL_INSERT_RANGE = 0x20
-
-
-class NoInterrupt(object):
-    """
-    Context manager used to perform a sequence of IO operations that
-    must not be interrupted with KeyboardInterrupt.
-    """
-
-    def __enter__(self):
-        self._signal_received = False
-        self._old_handler = signal.signal(signal.SIGINT, self.handler)
-
-    def handler(self, sig, frame):
-        self._signal_received = (sig, frame)
-
-    def __exit__(self, type, value, traceback):
-        signal.signal(signal.SIGINT, self._old_handler)
-
-        if self._signal_received:
-            self._old_handler(*self._signal_received)
-
+from . import _file
 
 def isfile(value):
     return (hasattr(value, "seekable") and callable(value.seekable) and value.seekable()
@@ -295,6 +248,9 @@ class EBMLMasterElementInFile(EBMLElement):
                     offsetInFile - self.dataOffsetInFile, ebmlID, vsize,
                     dataOffsetInFile - self.dataOffsetInFile, isize)
 
+    def _scan(self):
+        _file._scan(self)
+
     def _scanchild(self, offset, ebmlID, vsize, dataoffset, isize):
         self._children[offset] = (
             ebmlID, None, dataoffset + isize)
@@ -304,6 +260,9 @@ class EBMLMasterElementInFile(EBMLElement):
         # increasing values of offset, so we will go with the less-
         # expensive append operation.
         self._childoffsets.append(offset)
+
+    def _scanchild(self, offset, ebmlID, vsize, dataoffset, isize):
+        _file._scanchild(self, offset, ebmlID, vsize, dataoffset, isize)
 
     def _readChildElement(self, offset=-1):
         with self.lock:
@@ -324,7 +283,7 @@ class EBMLMasterElementInFile(EBMLElement):
 
     def _canAddChildElement(self, child, offset):
         if offset < 0:
-            raise WriteError(f"Invalid offset: {offset}.")
+            raise WriteError(f"Invalid offset: {offset}.", self, offset)
 
         prevChild = self._prevChild(offset)
         nextChild = self._nextChild(offset - 1)
@@ -335,16 +294,17 @@ class EBMLMasterElementInFile(EBMLElement):
             if offset < e:
                 raise WriteError(
                     f"Writing child at offset {offset} collides"
-                    f"with sibling at offset {prevChild} (end offset {e}).")
+                    f"with sibling at offset {prevChild} (end offset {e}).",
+                    self, offset)
 
             if offset == e + 1:
                 raise WriteError(
                     "Child needs to start immediately after, or at least two "
                     f"bytes past the end of sibling at offset {prevChild} "
-                    f" (end offset {e}).")
+                    f" (end offset {e}).", self, offset)
 
         elif offset == 1:
-            raise WriteError("Cannot add child at offset 1.")
+            raise WriteError("Cannot add child at offset 1.", self, offset)
 
         childsize = child.size()
 
@@ -353,19 +313,22 @@ class EBMLMasterElementInFile(EBMLElement):
                 raise WriteError(
                     f"Writing element at offset {offset} with size "
                     f"{childsize} collides with "
-                    f"sibling at offset {nextChild}.")
+                    f"sibling at offset {nextChild}.", self, offset)
 
             if offset + childsize == nextChild - 1:
                 raise WriteError(
                     "Child needs to end immediately before, or at least "
-                    f"two bytes before the start of sibling at offset {s}.")
+                    f"two bytes before the start of sibling at offset {s}.",
+                    self, offset)
 
         elif offset + childsize > self.dataSize:
-            raise WriteError(f"Child will extend past element size.")
+            raise WriteError(f"Child will extend past element size.",
+                             self, offset)
 
         elif offset + childsize == self.dataSize - 1:
             raise WriteError(
-                "Child must not end one byte before end of element.")
+                "Child must not end one byte before end of element.",
+                self, offset)
 
     def canAddChildElement(self, child, offset):
         with self.lock:
@@ -484,7 +447,8 @@ class EBMLMasterElementInFile(EBMLElement):
 
     def _canMoveChildElement(self, offset, newoffset):
         if newoffset < 0:
-            raise WriteError(f"Invalid offset: {newoffset}.")
+            raise WriteError(f"Invalid offset: {newoffset}.",
+                             self, newoffset)
 
         ebmlID, ref, endoffset = self._children[offset]
 
@@ -497,16 +461,17 @@ class EBMLMasterElementInFile(EBMLElement):
             if newoffset < e:
                 raise WriteError(
                     f"Writing child at offset {newoffset} collides"
-                    f"with sibling at offset {prevChild} (end offset {e}).")
+                    f"with sibling at offset {prevChild} (end offset {e}).",
+                    self, newoffset)
 
             if newoffset == e + 1:
                 raise WriteError(
                     "Child needs to start immediately after, or at least "
                     f"two bytes past the end of sibling at offset {s}"
-                    f" (end offset {e}).")
+                    f" (end offset {e}).", self, newoffset)
 
         elif newoffset == 1:
-            raise WriteError("Cannot add child at offset 1.")
+            raise WriteError("Cannot add child at offset 1.", self, newoffset)
 
         childsize = endoffset - offset
 
@@ -516,19 +481,23 @@ class EBMLMasterElementInFile(EBMLElement):
             if newoffset + childsize > s:
                 raise WriteError(
                     f"Writing element at offset {newoffset} with size {size} "
-                    f"collides with sibling at offset {s} (end offset {e}).")
+                    f"collides with sibling at offset {s} (end offset {e}).",
+                    self, newoffset)
 
             if newoffset + childsize == s - 1:
                 raise WriteError(
                     "Child needs to end immediately before, or at least "
-                    f"two bytes before the start of sibling at offset {s}.")
+                    f"two bytes before the start of sibling at offset {s}.",
+                    self, newoffset)
 
         elif newoffset + childsize > self.dataSize:
-            raise WriteError(f"Child will extend past element size.")
+            raise WriteError(f"Child will extend past element size.",
+                             self, newoffset)
 
         elif newoffset + childsize == self.dataSize - 1:
             raise WriteError(
-                "Child must not end one byte before end of element.")
+                "Child must not end one byte before end of element.",
+                self, newoffset)
 
     def moveChildElement(self, offset, newoffset):
         """
@@ -612,14 +581,14 @@ class EBMLMasterElementInFile(EBMLElement):
             if not (e1 <= newoffset < s1):
                 self._writeVoid(e1, s1 - e1)
 
-            if newoffset > e2:
+            if newoffset > e1:
                 self._writeVoid(e1, newoffset - e1)
 
-            if newoffset + childsize < s2:
-                self._writeVoid(newoffset + childsize, s2 - (newoffset + childsize))
+            if newoffset + childsize < s1:
+                self._writeVoid(newoffset + childsize, s1 - (newoffset + childsize))
 
             del self._children[offset]
-            self._childoffsets.remove(obbset)
+            self._childoffsets.remove(offset)
 
             self._children[newoffset] = (ebmlID, ref, newoffset + childsize)
             bisect.insort(self._childoffsets, newoffset)
@@ -895,12 +864,13 @@ class EBMLMasterElementInFile(EBMLElement):
         if prevEnd > offset:
             raise WriteError(
                 f"Punching hole at offset {offset} with size {size} will "
-                f"collide with child at offset {prev}, end offset {prevEnd}.")
+                f"collide with child at offset {prev}, end offset {prevEnd}.",
+                self, offset)
 
         elif offset + size > self.dataSize:
             raise WriteError(
                 f"Punching hole at offset {offset} with size {size} will "
-                f"overrun element size {self.dataSize}.")
+                f"overrun element size {self.dataSize}.", self, offset)
 
         nextChild = self._nextChild(offset)
 
@@ -908,7 +878,7 @@ class EBMLMasterElementInFile(EBMLElement):
             if offset + size > nextChild:
                 raise WriteError(
                     f"Punching hole at offset {offset} with size {size} will "
-                    f"collide with child at offset {nextChild}.")
+                    f"collide with child at offset {nextChild}.", self, offset)
 
     def punchHole(self, offset, size):
         """Sparsify blocks via fallocate()."""
@@ -949,19 +919,20 @@ class EBMLMasterElementInFile(EBMLElement):
         if prevEnd > offset:
             raise WriteError(
                 f"Collapsing range at offset {offset} with size {size} will "
-                f"collide with child at offset {prev}, end offset {prevEnd}.")
+                f"collide with child at offset {prev}, end offset {prevEnd}.",
+                self, offset)
 
         elif offset + size > self.dataSize:
             raise WriteError(
                 f"Collapsing range at offset {offset} with size {size} will "
-                f"overrun element size {self.dataSize}.")
+                f"overrun element size {self.dataSize}.", self, offset)
 
         if self.dataSize - prevEnd - size == 1:
             raise WriteError(
                 f"Collapsing range at offset {offset} with size {size} will "
                 f"leave a space of one byte between child at offset "
                 f"{prev}, end offset {prevEnd}, and end of element "
-                f"{self.dataSize}.")
+                f"{self.dataSize}.", self, offset)
 
         nextChild = self._nextChild(offset)
 
@@ -969,13 +940,14 @@ class EBMLMasterElementInFile(EBMLElement):
             if offset + size > nextChild:
                 raise WriteError(
                     f"Collapsing range at offset {offset} with size {size} will "
-                    f"collide with child at offset {nextChild}.")
+                    f"collide with child at offset {nextChild}.", self, offset)
 
             if nextChild - prevEnd - size == 1:
                 raise WriteError(
                     f"Collapsing range at offset {offset} with size {size} will "
                     f"leave a space of one byte between child at offset "
-                    f"{prev}, end offset {prevEnd}, and child at offset {nextChild}.")
+                    f"{prev}, end offset {prevEnd}, "
+                    f"and child at offset {nextChild}.", self, offset)
 
     def collapseRange(self, offset, size):
         """Remove blocks via fallocate()."""
@@ -1073,7 +1045,8 @@ class EBMLMasterElementInFile(EBMLElement):
             if detectVintSize(element.dataSize + size) > element._sizeLength:
                 raise WriteError(
                     f"Element with size width {element._sizeLength} does "
-                    f"not support  resizing to {element.dataSize + size}.")
+                    f"not support  resizing to {element.dataSize + size}.",
+                    self, offset)
 
             element = element.parent
 
@@ -1086,7 +1059,8 @@ class EBMLMasterElementInFile(EBMLElement):
         if prevEnd > offset:
             raise WriteError(
                 f"Inserting range at offset {offset} with size {size} will "
-                f"collide with child at offset {prev}, end offset {prevEnd}.")
+                f"collide with child at offset {prev}, end offset {prevEnd}.",
+                self, offset)
 
     def insertRange(self, offset, size):
         """Insert blocks via fallocate()."""
@@ -1223,7 +1197,7 @@ class EBMLMasterElementInFile(EBMLElement):
             if start <= self.dataSize:
                 return start
 
-    def rfindOpenBoundary(self, start=0):
+    def rfindOpenBoundary(self, start=None):
         """
         Finds an offset on a block boundary where one can insert a child
         element (Reverse).
@@ -1317,7 +1291,7 @@ class EBMLMasterElementInFile(EBMLElement):
 
     def _tryMoveChildElement(self, offset, newoffset):
         try:
-            self._tryMoveChildElement(offset, newoffset)
+            self._canMoveChildElement(offset, newoffset)
 
         except WriteError:
             return False
@@ -1350,7 +1324,7 @@ class EBMLMasterElementInFile(EBMLElement):
 
             if self._childIsElementInFile(offset):
                 obj = self._getChildElement(offset)
-                obj._quickTrim(maxsize, debugfile, f"{debugindent}    ")
+                obj._quickTrim(maxsize)
                 self._tryCollapseRange(prevEnd, offset)
 
             elif endOffset - offset <= maxsize:

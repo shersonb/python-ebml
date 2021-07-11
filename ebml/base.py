@@ -807,7 +807,7 @@ class EBMLElement(object, metaclass=EBMLElementMetaClass):
         """
         Without creating an instance, reads data from file. The default
         behavior of this function will be to return what will be the data
-        attribute if an instance is created using fromFile(file).⎄
+        attribute if an instance is created using fromFile(file).
         """
         (offset, ebmlID, size) = cls._readHead(file)
         return cls._sniff(file, ebml.util.fromVint(size))
