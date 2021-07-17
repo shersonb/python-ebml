@@ -480,7 +480,7 @@ class EBMLMasterElementInFile(EBMLElement):
 
             if newoffset + childsize > s:
                 raise WriteError(
-                    f"Writing element at offset {newoffset} with size {size} "
+                    f"Writing element at offset {newoffset} with size {childsize} "
                     f"collides with sibling at offset {s} (end offset {e}).",
                     self, newoffset)
 
